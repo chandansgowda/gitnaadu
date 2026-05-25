@@ -1,0 +1,50 @@
+# GitNaadu
+
+A fully **client-side Git simulator and learning playground**. It runs an
+in-browser Git engine (no backend, no real `git`) so you can experiment with
+commits, branches, merges, diffs, remotes, and guided challenges — all from a
+simulated terminal with a live commit-graph visualizer.
+
+Everything runs in the browser: the "filesystem", the Git object model, and the
+command parser all live in `src/lib/`.
+
+## Tech stack
+
+- **React 18** (with React Fast Refresh in dev)
+- **Webpack 5** + Babel — bundling and dev server
+- **Tailwind CSS 3** + [`tailwindcss-animate`] — styling (shadcn/ui-style tokens)
+- **Radix UI**, **lucide-react**, **framer-motion**, **sonner** — UI primitives
+
+## Getting started
+
+```bash
+npm install      # install dependencies
+npm run dev      # start the dev server at http://localhost:3000
+npm run build    # produce a production bundle in dist/
+```
+
+`npm start` is an alias for `npm run dev`.
+
+## Project layout
+
+```
+src/
+  index.js          # React entry point
+  index.css         # Tailwind directives + custom global styles
+  App.js            # top-level layout, wires panels + hooks together
+  components/       # UI panels (Terminal, GitTree, Editor, DiffView, ...)
+    ui/             # shadcn/ui-style primitives (button, dialog, tabs, ...)
+  hooks/            # useGitNaadu (state), useChallenges, useSound
+  lib/              # the simulator core
+    gitEngine.js    #   in-memory Git object model + operations
+    commands.js     #   parses/executes terminal commands
+    filesystem.js   #   virtual filesystem
+    diff.js         #   diffing
+    challenges.js   #   guided lessons/challenges
+    initialState.js #   starting repo state
+public/
+  index.html        # HTML template (webpack injects the bundle)
+```
+
+The `@/` import alias maps to `src/` (configured in `webpack.config.js` and
+`jsconfig.json`).

@@ -1,0 +1,13 @@
+node_modules/
+dist/
+.DS_Store
+*.log
+npm-debug.log*
+.cache/
+
+# Local env files (none today, but never commit secrets)
+.env
+.env.*
+
+# Claude Code local/personal settings
+.claude/settings.local.json

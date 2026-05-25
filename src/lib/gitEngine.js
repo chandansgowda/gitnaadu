@@ -1,0 +1,1288 @@
+// Tiny Git simulator. All in-memory, no network.
+// A "repo" lives at a directory path (the dir where `git init` was run).
+//
+// Repo shape:
+// {
+//   path,
+//   commits: { [hash]: Commit },
+//   branches: { [name]: hash },
+//   tags:     { [name]: hash },
+//   HEAD: { type: 'branch'|'detached', ref: 'main' | hash },
+//   staged:  { [relPath]: content | null },  // null = staged deletion
+//   tracked: { [relPath]: content },
+//   branchColors: { [name]: '#RRGGBB' },
+//   remote:  { branches, commits, url },
+//   remotes: { [name]: { url } },
+//   reflog:  [ { ts, op, oldHash, newHash, message } ],
+//   stashes: [ { id, message, branch, files, parent, date } ],
+//   config:  { user: { name, email } }
+// }
+//
+// Commit: { hash, parents:[hash], message, files:{[relPath]:content}, author, date, branch }
+
+import { getNode, walkFiles } from "./filesystem";
+
+const COLORS = [
+    "#FFD700",
+    "#38BDF8",
+    "#F43F5E",
+    "#A78BFA",
+    "#34D399",
+    "#FB923C",
+    "#F472B6",
+    "#22D3EE",
+];
+
+let _hashCounter = 0;
+const shortHash = () => {
+    _hashCounter += 1;
+    const t = Date.now().toString(36).slice(-3);
+    const c = _hashCounter.toString(36);
+    const r = Math.random().toString(36).slice(2, 5);
+    return (t + c + r).slice(0, 7);
+};
+
+export const newRepo = (path) => ({
+    path,
+    commits: {},
+    branches: {},
+    tags: {},
+    HEAD: { type: "branch", ref: "main" },
+    staged: {},
+    tracked: {},
+    branchColors: { main: COLORS[0] },
+    remote: { branches: {}, commits: {}, url: "origin (simulated)" },
+    remoteRefs: {}, // { "origin/main": hash }
+    remotes: { origin: { url: "origin (simulated)" } },
+    reflog: [],
+    stashes: [],
+    config: { user: { name: "student", email: "student@gitnaadu" } },
+});
+
+// Migration: ensure new fields exist for repos persisted from earlier sessions.
+export const ensureRepoShape = (repo) => {
+    if (!repo) return repo;
+    if (!repo.tags) repo.tags = {};
+    if (!repo.reflog) repo.reflog = [];
+    if (!repo.stashes) repo.stashes = [];
+    if (!repo.config) repo.config = { user: { name: "student", email: "student@gitnaadu" } };
+    if (!repo.remotes) repo.remotes = { origin: { url: "origin (simulated)" } };
+    if (!repo.remote) repo.remote = { branches: {}, commits: {}, url: "origin (simulated)" };
+    if (!repo.remoteRefs) repo.remoteRefs = {};
+    if (!repo.branchColors) repo.branchColors = { main: COLORS[0] };
+    return repo;
+};
+
+export const findRepo = (repos, cwd) => {
+    let best = null;
+    for (const r of Object.values(repos)) {
+        if (cwd === r.path || cwd.startsWith(r.path + "/")) {
+            if (!best || r.path.length > best.path.length) best = r;
+        }
+    }
+    return ensureRepoShape(best);
+};
+
+export const relPath = (repo, absPath) => {
+    if (absPath === repo.path) return ".";
+    if (absPath.startsWith(repo.path + "/")) return absPath.slice(repo.path.length + 1);
+    return absPath;
+};
+
+export const absFromRel = (repo, rel) => {
+    if (rel === "." || rel === "") return repo.path;
+    return repo.path + "/" + rel;
+};
+
+export const currentBranch = (repo) =>
+    repo.HEAD.type === "branch" ? repo.HEAD.ref : null;
+
+export const headCommit = (repo) => {
+    if (repo.HEAD.type === "branch") return repo.branches[repo.HEAD.ref] || null;
+    return repo.HEAD.ref;
+};
+
+const reflog = (repo, op, oldHash, newHash, message) => {
+    repo.reflog = repo.reflog || [];
+    repo.reflog.unshift({
+        ts: new Date().toISOString(),
+        op,
+        oldHash,
+        newHash,
+        message,
+    });
+    if (repo.reflog.length > 200) repo.reflog.length = 200;
+};
+
+// Snapshot of working files belonging to this repo from VFS.
+export const workingSnapshot = (fsRoot, repo) => {
+    const files = walkFiles(fsRoot, repo.path);
+    const snap = {};
+    for (const f of files) {
+        const r = relPath(repo, f.path);
+        if (r === ".") continue;
+        snap[r] = f.node.content || "";
+    }
+    return snap;
+};
+
+// Get the "indexed" view of files: tracked + staged overrides (null = deleted).
+export const indexedFiles = (repo) => {
+    const out = { ...(repo.tracked || {}) };
+    for (const [p, v] of Object.entries(repo.staged || {})) {
+        if (v === null) delete out[p];
+        else out[p] = v;
+    }
+    return out;
+};
+
+export const status = (fsRoot, repo) => {
+    const working = workingSnapshot(fsRoot, repo);
+    const tracked = repo.tracked || {};
+    const staged = repo.staged || {};
+    const unstaged = [];
+    const stagedList = [];
+    const untracked = [];
+
+    for (const p of Object.keys(staged)) {
+        if (staged[p] === null) {
+            stagedList.push({ path: p, kind: "deleted" });
+        } else if (!(p in tracked)) {
+            stagedList.push({ path: p, kind: "new file" });
+        } else if (tracked[p] !== staged[p]) {
+            stagedList.push({ path: p, kind: "modified" });
+        }
+    }
+
+    for (const p of Object.keys(working)) {
+        const stagedVal = p in staged ? staged[p] : tracked[p];
+        if (stagedVal === undefined) {
+            untracked.push(p);
+        } else if (working[p] !== stagedVal) {
+            unstaged.push({ path: p, kind: "modified" });
+        }
+    }
+    for (const p of Object.keys(tracked)) {
+        if (!(p in working) && !(p in staged)) {
+            unstaged.push({ path: p, kind: "deleted" });
+        }
+    }
+    return { staged: stagedList, unstaged, untracked };
+};
+
+export const gitAdd = (fsRoot, repo, target) => {
+    const working = workingSnapshot(fsRoot, repo);
+    const tracked = repo.tracked || {};
+    let matched = [];
+    let deletedStaged = 0;
+    if (target === "." || target === "-A" || target === "--all") {
+        matched = Object.keys(working);
+        for (const p of Object.keys(tracked)) {
+            if (!(p in working) && repo.staged[p] !== null) {
+                repo.staged[p] = null;
+                deletedStaged++;
+            }
+        }
+    } else {
+        const t = target.startsWith("./") ? target.slice(2) : target;
+        for (const p of Object.keys(working)) {
+            if (p === t || p.startsWith(t + "/")) matched.push(p);
+        }
+        // Also stage deletion if target was tracked but missing in working tree
+        if (matched.length === 0 && (t in tracked)) {
+            if (repo.staged[t] !== null) {
+                repo.staged[t] = null;
+                deletedStaged = 1;
+            }
+            matched = [t];
+        }
+    }
+    if (matched.length === 0 && deletedStaged === 0)
+        return { error: `fatal: pathspec '${target}' did not match any files` };
+
+    // Count only files whose staged content actually changes (new or modified vs tracked/current-stage)
+    let changed = deletedStaged;
+    for (const p of matched) {
+        if (!(p in working)) continue;
+        const currentlyStaged = p in repo.staged ? repo.staged[p] : tracked[p];
+        if (currentlyStaged !== working[p]) {
+            repo.staged[p] = working[p];
+            changed++;
+        }
+    }
+    return { ok: true, added: changed, matched: matched.length };
+};
+
+export const gitCommit = (repo, message, opts = {}) => {
+    const stagedKeys = Object.keys(repo.staged);
+    if (!opts.amend && stagedKeys.length === 0) {
+        return { error: "nothing to commit, working tree clean (use `git add`)" };
+    }
+    if (!message || !message.trim()) {
+        return { error: "Aborting commit due to empty commit message." };
+    }
+
+    if (opts.amend) {
+        const head = headCommit(repo);
+        if (!head) return { error: "no commit to amend" };
+        const headCommitObj = repo.commits[head];
+        const baseFiles = { ...headCommitObj.files };
+        for (const p of stagedKeys) {
+            if (repo.staged[p] === null) delete baseFiles[p];
+            else baseFiles[p] = repo.staged[p];
+        }
+        // Replace in-place (keep same hash, behave like real git which makes a new hash, but we keep hash for graph stability)
+        headCommitObj.message = message.trim();
+        headCommitObj.files = baseFiles;
+        headCommitObj.date = new Date().toISOString();
+        repo.tracked = { ...baseFiles };
+        repo.staged = {};
+        reflog(repo, "commit (amend)", head, head, message.trim());
+        return { ok: true, hash: head, message: message.trim(), amended: true };
+    }
+
+    const parent = headCommit(repo);
+    const newFiles = { ...(parent ? repo.commits[parent].files : {}) };
+    for (const p of stagedKeys) {
+        if (repo.staged[p] === null) delete newFiles[p];
+        else newFiles[p] = repo.staged[p];
+    }
+    const hash = shortHash();
+    const branch = currentBranch(repo) || "(detached)";
+    const commit = {
+        hash,
+        parents: parent ? [parent] : [],
+        message: message.trim(),
+        files: newFiles,
+        author: repo.config?.user?.name || "student",
+        date: new Date().toISOString(),
+        branch,
+    };
+    repo.commits[hash] = commit;
+    if (repo.HEAD.type === "branch") repo.branches[repo.HEAD.ref] = hash;
+    else repo.HEAD = { type: "detached", ref: hash };
+    repo.tracked = { ...newFiles };
+    repo.staged = {};
+    reflog(repo, "commit", parent, hash, commit.message);
+    return { ok: true, hash, message: commit.message };
+};
+
+export const gitLog = (repo, limit = 200) => {
+    const start = headCommit(repo);
+    if (!start) return [];
+    const out = [];
+    const seen = new Set();
+    const stack = [start];
+    while (stack.length) {
+        const h = stack.pop();
+        if (seen.has(h) || !repo.commits[h]) continue;
+        seen.add(h);
+        out.push(repo.commits[h]);
+        for (const p of repo.commits[h].parents) stack.push(p);
+        if (out.length >= limit) break;
+    }
+    out.sort((a, b) => (a.date < b.date ? 1 : -1));
+    return out;
+};
+
+const ancestors = (repo, hash) => {
+    const set = new Set();
+    const stack = [hash];
+    while (stack.length) {
+        const h = stack.pop();
+        if (!h || set.has(h) || !repo.commits[h]) continue;
+        set.add(h);
+        for (const p of repo.commits[h].parents) stack.push(p);
+    }
+    return set;
+};
+
+const lowestCommonAncestor = (repo, a, b) => {
+    if (!a || !b) return null;
+    const ancA = ancestors(repo, a);
+    const stack = [b];
+    const seen = new Set();
+    while (stack.length) {
+        const h = stack.pop();
+        if (!h || seen.has(h)) continue;
+        seen.add(h);
+        if (ancA.has(h)) return h;
+        for (const p of repo.commits[h]?.parents || []) stack.push(p);
+    }
+    return null;
+};
+
+export const gitBranch = (repo, name, opts = {}) => {
+    if (!name) {
+        return {
+            ok: true,
+            list: Object.keys(repo.branches).map((b) => ({
+                name: b,
+                active: currentBranch(repo) === b,
+            })),
+        };
+    }
+    if (opts.delete) {
+        if (!repo.branches[name]) return { error: `branch '${name}' not found.` };
+        if (currentBranch(repo) === name)
+            return { error: `cannot delete branch '${name}' checked out` };
+        delete repo.branches[name];
+        delete repo.branchColors[name];
+        return { ok: true, deleted: name };
+    }
+    if (opts.rename) {
+        const cur = currentBranch(repo);
+        const from = opts.from || cur;
+        if (!from) return { error: "no branch to rename" };
+        if (!repo.branches[from]) return { error: `branch '${from}' not found.` };
+        if (repo.branches[name]) return { error: `branch '${name}' already exists.` };
+        repo.branches[name] = repo.branches[from];
+        repo.branchColors[name] = repo.branchColors[from] || COLORS[0];
+        delete repo.branches[from];
+        delete repo.branchColors[from];
+        if (cur === from) repo.HEAD = { type: "branch", ref: name };
+        return { ok: true, renamed: { from, to: name } };
+    }
+    if (repo.branches[name]) return { error: `branch '${name}' already exists.` };
+    const head = headCommit(repo);
+    if (!head) return { error: "Not a valid object name: 'HEAD'." };
+    repo.branches[name] = head;
+    repo.branchColors[name] =
+        COLORS[Object.keys(repo.branches).length % COLORS.length];
+    return { ok: true, created: name };
+};
+
+export const gitCheckout = (fsRoot, repo, target, opts = {}) => {
+    if (opts.newBranch) {
+        const r = gitBranch(repo, target);
+        if (r.error) return r;
+    }
+    const oldHead = headCommit(repo);
+    if (repo.branches[target] !== undefined) {
+        repo.HEAD = { type: "branch", ref: target };
+        applyCommitToFs(fsRoot, repo, repo.branches[target]);
+        reflog(repo, "checkout", oldHead, repo.branches[target], `moving to ${target}`);
+        return { ok: true, switched: target };
+    }
+    if (repo.tags?.[target]) {
+        repo.HEAD = { type: "detached", ref: repo.tags[target] };
+        applyCommitToFs(fsRoot, repo, repo.tags[target]);
+        reflog(repo, "checkout", oldHead, repo.tags[target], `moving to tag ${target}`);
+        return { ok: true, detached: target };
+    }
+    if (repo.commits[target]) {
+        repo.HEAD = { type: "detached", ref: target };
+        applyCommitToFs(fsRoot, repo, target);
+        reflog(repo, "checkout", oldHead, target, `moving to ${target}`);
+        return { ok: true, detached: target };
+    }
+    return { error: `pathspec '${target}' did not match any file(s) known to git` };
+};
+
+const applyCommitToFs = (fsRoot, repo, hash) => {
+    const commit = repo.commits[hash];
+    const files = commit ? commit.files : {};
+    const dirNode = getNode(fsRoot, repo.path);
+    if (!dirNode) return;
+    dirNode.children = {};
+    for (const [rel, content] of Object.entries(files)) {
+        const parts = rel.split("/");
+        let cur = dirNode;
+        for (let i = 0; i < parts.length - 1; i++) {
+            cur.children = cur.children || {};
+            if (!cur.children[parts[i]])
+                cur.children[parts[i]] = {
+                    type: "dir",
+                    name: parts[i],
+                    children: {},
+                };
+            cur = cur.children[parts[i]];
+        }
+        cur.children = cur.children || {};
+        cur.children[parts[parts.length - 1]] = {
+            type: "file",
+            name: parts[parts.length - 1],
+            content,
+        };
+    }
+    repo.tracked = { ...files };
+    repo.staged = {};
+};
+
+// Generic merge: bring `otherHash` into current HEAD's branch.
+const mergeCommitIntoHead = (fsRoot, repo, otherHash, label) => {
+    const cur = headCommit(repo);
+    if (!cur) return { error: "Nothing to merge into (no HEAD)." };
+    if (!otherHash) return { error: "Nothing to merge: invalid target." };
+    if (otherHash === cur)
+        return { ok: true, alreadyUpToDate: true, message: "Already up to date." };
+    const lca = lowestCommonAncestor(repo, cur, otherHash);
+    if (lca === otherHash) {
+        return { ok: true, alreadyUpToDate: true, message: "Already up to date." };
+    }
+    if (lca === cur) {
+        if (repo.HEAD.type === "branch") repo.branches[repo.HEAD.ref] = otherHash;
+        else repo.HEAD = { type: "detached", ref: otherHash };
+        applyCommitToFs(fsRoot, repo, otherHash);
+        reflog(repo, "merge", cur, otherHash, `${label || otherHash} (fast-forward)`);
+        return { ok: true, ff: true, hash: otherHash };
+    }
+    // True merge — produce a merge commit with two parents.
+    const baseFiles = repo.commits[lca]?.files || {};
+    const curFiles = repo.commits[cur].files;
+    const tgtFiles = repo.commits[otherHash].files;
+    const merged = { ...curFiles };
+    for (const [p, c] of Object.entries(tgtFiles)) {
+        if (!(p in merged)) merged[p] = c;
+        else if (merged[p] !== c && baseFiles[p] !== c) merged[p] = c;
+    }
+    const hash = shortHash();
+    repo.commits[hash] = {
+        hash,
+        parents: [cur, otherHash],
+        message: `Merge ${label || otherHash}`,
+        files: merged,
+        author: repo.config?.user?.name || "student",
+        date: new Date().toISOString(),
+        branch: currentBranch(repo) || "(detached)",
+    };
+    if (repo.HEAD.type === "branch") repo.branches[repo.HEAD.ref] = hash;
+    else repo.HEAD = { type: "detached", ref: hash };
+    applyCommitToFs(fsRoot, repo, hash);
+    reflog(repo, "merge", cur, hash, label || otherHash);
+    return { ok: true, hash };
+};
+
+export const gitMerge = (fsRoot, repo, ref) => {
+    const otherHash = resolveRev(repo, ref);
+    if (!otherHash)
+        return { error: `merge: ${ref} - not something we can merge` };
+    if (currentBranch(repo) === ref)
+        return { error: `Already on '${ref}' — nothing to merge.` };
+    const r = mergeCommitIntoHead(fsRoot, repo, otherHash, ref);
+    if (r.error) return r;
+    return { ...r, merged: ref };
+};
+
+export const gitRebase = (fsRoot, repo, ontoBranch) => {
+    if (!repo.branches[ontoBranch])
+        return { error: `invalid upstream '${ontoBranch}'` };
+    const onto = repo.branches[ontoBranch];
+    const curName = currentBranch(repo);
+    if (!curName) return { error: "rebase requires a branch checkout" };
+    const cur = repo.branches[curName];
+    const lca = lowestCommonAncestor(repo, cur, onto);
+    if (!lca) return { error: "no common ancestor" };
+    if (lca === cur) {
+        repo.branches[curName] = onto;
+        applyCommitToFs(fsRoot, repo, onto);
+        reflog(repo, "rebase", cur, onto, `onto ${ontoBranch}`);
+        return { ok: true, ff: true };
+    }
+    const linear = [];
+    const walk = (h) => {
+        if (!h || h === lca) return;
+        const c = repo.commits[h];
+        if (!c) return;
+        if (c.parents.length > 0) walk(c.parents[0]);
+        linear.push(c);
+    };
+    walk(cur);
+    let parent = onto;
+    let lastHash = onto;
+    for (const c of linear) {
+        const h = shortHash();
+        const newCommit = {
+            hash: h,
+            parents: [parent],
+            message: c.message,
+            files: { ...c.files },
+            author: c.author,
+            date: new Date().toISOString(),
+            branch: curName,
+        };
+        repo.commits[h] = newCommit;
+        parent = h;
+        lastHash = h;
+    }
+    repo.branches[curName] = lastHash;
+    applyCommitToFs(fsRoot, repo, lastHash);
+    reflog(repo, "rebase", cur, lastHash, `onto ${ontoBranch}, ${linear.length} commits`);
+    return { ok: true, onto: ontoBranch, count: linear.length };
+};
+
+const resolveRev = (repo, rev) => {
+    if (!rev) return null;
+    if (rev === "HEAD") return headCommit(repo);
+    if (repo.branches[rev]) return repo.branches[rev];
+    if (repo.tags?.[rev]) return repo.tags[rev];
+    if (repo.remoteRefs?.[rev]) return repo.remoteRefs[rev];
+    // origin/<branch> shorthand even if remoteRefs not populated yet
+    if (rev.startsWith("origin/")) {
+        const b = rev.slice("origin/".length);
+        if (repo.remote?.branches?.[b]) return repo.remote.branches[b];
+    }
+    if (repo.commits[rev]) return rev;
+    const m = rev.match(/^HEAD(?:~(\d+))?$/);
+    if (m) {
+        let n = parseInt(m[1] || "0", 10);
+        let h = headCommit(repo);
+        while (n > 0 && h) {
+            h = repo.commits[h]?.parents?.[0];
+            n--;
+        }
+        return h;
+    }
+    // partial hash prefix
+    const matches = Object.keys(repo.commits).filter((h) => h.startsWith(rev));
+    if (matches.length === 1) return matches[0];
+    return null;
+};
+
+export const gitReset = (fsRoot, repo, target, mode = "--mixed") => {
+    const hash = resolveRev(repo, target);
+    if (!hash) return { error: `unknown revision '${target}'` };
+    const oldHead = headCommit(repo);
+    if (repo.HEAD.type === "branch") repo.branches[repo.HEAD.ref] = hash;
+    else repo.HEAD = { type: "detached", ref: hash };
+    if (mode === "--hard") {
+        applyCommitToFs(fsRoot, repo, hash);
+    } else {
+        repo.tracked = { ...(repo.commits[hash]?.files || {}) };
+        if (mode === "--mixed") repo.staged = {};
+    }
+    reflog(repo, "reset", oldHead, hash, `${mode} ${target}`);
+    return { ok: true, mode, hash };
+};
+
+export const gitRevert = (repo, target) => {
+    const head = headCommit(repo);
+    const targetHash = resolveRev(repo, target);
+    if (!targetHash) return { error: `bad revision '${target}'` };
+    if (!head) return { error: "nothing to revert" };
+    const targetCommit = repo.commits[targetHash];
+    const parentFiles = targetCommit.parents[0]
+        ? repo.commits[targetCommit.parents[0]].files
+        : {};
+    const newFiles = { ...repo.commits[head].files };
+    for (const p of Object.keys(targetCommit.files)) {
+        if (parentFiles[p] !== undefined) newFiles[p] = parentFiles[p];
+        else delete newFiles[p];
+    }
+    const hash = shortHash();
+    repo.commits[hash] = {
+        hash,
+        parents: [head],
+        message: `Revert "${targetCommit.message}"`,
+        files: newFiles,
+        author: repo.config?.user?.name || "student",
+        date: new Date().toISOString(),
+        branch: currentBranch(repo) || "(detached)",
+    };
+    if (repo.HEAD.type === "branch") repo.branches[repo.HEAD.ref] = hash;
+    else repo.HEAD = { type: "detached", ref: hash };
+    reflog(repo, "revert", head, hash, targetHash);
+    return { ok: true, hash };
+};
+
+export const gitCherryPick = (fsRoot, repo, target) => {
+    const head = headCommit(repo);
+    const targetHash = resolveRev(repo, target);
+    if (!targetHash) return { error: `bad revision '${target}'` };
+    if (!head) return { error: "no HEAD to cherry-pick onto" };
+    const tc = repo.commits[targetHash];
+    const newFiles = { ...repo.commits[head].files, ...tc.files };
+    const hash = shortHash();
+    repo.commits[hash] = {
+        hash,
+        parents: [head],
+        message: tc.message,
+        files: newFiles,
+        author: repo.config?.user?.name || "student",
+        date: new Date().toISOString(),
+        branch: currentBranch(repo) || "(detached)",
+    };
+    if (repo.HEAD.type === "branch") repo.branches[repo.HEAD.ref] = hash;
+    else repo.HEAD = { type: "detached", ref: hash };
+    applyCommitToFs(fsRoot, repo, hash);
+    reflog(repo, "cherry-pick", head, hash, targetHash);
+    return { ok: true, hash, picked: targetHash };
+};
+
+// Tags
+export const gitTag = (repo, name, target, opts = {}) => {
+    if (!name) {
+        return {
+            ok: true,
+            list: Object.entries(repo.tags || {}).map(([n, h]) => ({ name: n, hash: h })),
+        };
+    }
+    if (opts.delete) {
+        if (!repo.tags[name]) return { error: `tag '${name}' not found` };
+        delete repo.tags[name];
+        return { ok: true, deleted: name };
+    }
+    if (repo.tags?.[name]) return { error: `tag '${name}' already exists` };
+    const hash = target ? resolveRev(repo, target) : headCommit(repo);
+    if (!hash) return { error: `bad revision '${target || "HEAD"}'` };
+    repo.tags = repo.tags || {};
+    repo.tags[name] = hash;
+    return { ok: true, created: name, hash };
+};
+
+// Stash
+export const gitStash = (fsRoot, repo, message = "WIP") => {
+    const working = workingSnapshot(fsRoot, repo);
+    const tracked = repo.tracked || {};
+    // Only stash if something changed
+    const dirty =
+        Object.keys(repo.staged || {}).length > 0 ||
+        Object.entries(working).some(([k, v]) => tracked[k] !== v) ||
+        Object.keys(tracked).some((k) => !(k in working));
+    if (!dirty) return { error: "No local changes to save" };
+    const id = "stash@{" + repo.stashes.length + "}";
+    repo.stashes.unshift({
+        id,
+        message,
+        branch: currentBranch(repo),
+        files: { ...working },
+        staged: { ...repo.staged },
+        parent: headCommit(repo),
+        date: new Date().toISOString(),
+    });
+    // Restore to HEAD
+    const head = headCommit(repo);
+    if (head) applyCommitToFs(fsRoot, repo, head);
+    return { ok: true, id };
+};
+
+export const gitStashPop = (fsRoot, repo) => {
+    if (!repo.stashes.length) return { error: "No stash entries found" };
+    const s = repo.stashes.shift();
+    // Apply files to working tree
+    const dirNode = getNode(fsRoot, repo.path);
+    if (!dirNode) return { error: "repo path missing" };
+    dirNode.children = {};
+    for (const [rel, content] of Object.entries(s.files)) {
+        const parts = rel.split("/");
+        let cur = dirNode;
+        for (let i = 0; i < parts.length - 1; i++) {
+            cur.children = cur.children || {};
+            if (!cur.children[parts[i]])
+                cur.children[parts[i]] = { type: "dir", name: parts[i], children: {} };
+            cur = cur.children[parts[i]];
+        }
+        cur.children = cur.children || {};
+        cur.children[parts[parts.length - 1]] = {
+            type: "file",
+            name: parts[parts.length - 1],
+            content,
+        };
+    }
+    repo.staged = { ...s.staged };
+    return { ok: true, id: s.id };
+};
+
+// Restore
+export const gitRestore = (fsRoot, repo, path, opts = {}) => {
+    if (opts.staged) {
+        // unstage: drop from staged
+        let count = 0;
+        for (const p of Object.keys(repo.staged || {})) {
+            if (p === path || p.startsWith(path + "/") || path === ".") {
+                delete repo.staged[p];
+                count++;
+            }
+        }
+        return { ok: true, unstaged: count };
+    }
+    // Restore working tree from index (staged ?? tracked)
+    const src = indexedFiles(repo);
+    const dirNode = getNode(fsRoot, repo.path);
+    if (!dirNode) return { error: "repo path missing" };
+    // For each matching path, replace content in VFS
+    const targets = Object.keys(src).filter(
+        (p) => p === path || path === "." || p.startsWith(path + "/"),
+    );
+    if (targets.length === 0) return { error: `pathspec '${path}' did not match` };
+    for (const rel of targets) {
+        const parts = rel.split("/");
+        let cur = dirNode;
+        for (let i = 0; i < parts.length - 1; i++) {
+            cur.children = cur.children || {};
+            if (!cur.children[parts[i]])
+                cur.children[parts[i]] = { type: "dir", name: parts[i], children: {} };
+            cur = cur.children[parts[i]];
+        }
+        cur.children = cur.children || {};
+        cur.children[parts[parts.length - 1]] = {
+            type: "file",
+            name: parts[parts.length - 1],
+            content: src[rel],
+        };
+    }
+    return { ok: true, restored: targets.length };
+};
+
+// git rm
+export const gitRm = (fsRoot, repo, path) => {
+    const tracked = repo.tracked || {};
+    const matches = Object.keys(tracked).filter(
+        (p) => p === path || p.startsWith(path + "/"),
+    );
+    if (matches.length === 0)
+        return { error: `pathspec '${path}' did not match any tracked files` };
+    // Remove from VFS
+    const dirNode = getNode(fsRoot, repo.path);
+    for (const rel of matches) {
+        const parts = rel.split("/");
+        let cur = dirNode;
+        for (let i = 0; i < parts.length - 1; i++) {
+            cur = cur?.children?.[parts[i]];
+            if (!cur) break;
+        }
+        if (cur?.children) delete cur.children[parts[parts.length - 1]];
+        repo.staged[rel] = null;
+    }
+    return { ok: true, removed: matches.length };
+};
+
+// git mv (also stages)
+export const gitMv = (fsRoot, repo, src, dst) => {
+    const tracked = repo.tracked || {};
+    if (!(src in tracked)) return { error: `'${src}' is not tracked` };
+    const content = tracked[src];
+    repo.staged[src] = null;
+    repo.staged[dst] = content;
+    // Update VFS
+    const dirNode = getNode(fsRoot, repo.path);
+    if (dirNode) {
+        // delete src
+        const sp = src.split("/");
+        let cur = dirNode;
+        for (let i = 0; i < sp.length - 1; i++) cur = cur?.children?.[sp[i]];
+        if (cur?.children) delete cur.children[sp[sp.length - 1]];
+        // create dst
+        const dp = dst.split("/");
+        cur = dirNode;
+        for (let i = 0; i < dp.length - 1; i++) {
+            cur.children = cur.children || {};
+            if (!cur.children[dp[i]])
+                cur.children[dp[i]] = { type: "dir", name: dp[i], children: {} };
+            cur = cur.children[dp[i]];
+        }
+        cur.children[dp[dp.length - 1]] = {
+            type: "file",
+            name: dp[dp.length - 1],
+            content,
+        };
+    }
+    return { ok: true };
+};
+
+// Reflog
+export const gitReflog = (repo) => (repo.reflog || []).slice();
+
+// Show
+export const gitShow = (repo, target) => {
+    const hash = resolveRev(repo, target || "HEAD");
+    if (!hash) return { error: `bad revision '${target}'` };
+    const c = repo.commits[hash];
+    if (!c) return { error: `commit '${target}' not found` };
+    const parent = c.parents[0] ? repo.commits[c.parents[0]] : null;
+    const before = parent ? parent.files : {};
+    const after = c.files;
+    const changes = [];
+    const all = new Set([...Object.keys(before), ...Object.keys(after)]);
+    for (const p of all) {
+        if (before[p] === after[p]) continue;
+        changes.push({ path: p, before: before[p] || "", after: after[p] || "" });
+    }
+    return { ok: true, commit: c, changes };
+};
+
+// Diff helpers
+export const computeDiffPairs = (fsRoot, repo, opts = {}) => {
+    // Returns [{ path, before, after, status }] for the requested comparison.
+    // opts: { staged:false } -> working vs index; { staged:true } -> index vs HEAD
+    // opts.between = [a, b] -> commit a vs commit b
+    const tracked = repo.tracked || {};
+    const staged = repo.staged || {};
+    const index = indexedFiles(repo);
+    if (opts.between) {
+        const [a, b] = opts.between.map((r) => resolveRev(repo, r));
+        const A = repo.commits[a]?.files || {};
+        const B = repo.commits[b]?.files || {};
+        const all = new Set([...Object.keys(A), ...Object.keys(B)]);
+        return [...all]
+            .filter((p) => A[p] !== B[p])
+            .map((p) => ({ path: p, before: A[p] || "", after: B[p] || "" }));
+    }
+    if (opts.staged) {
+        const all = new Set([...Object.keys(tracked), ...Object.keys(staged)]);
+        const out = [];
+        for (const p of all) {
+            const before = tracked[p];
+            const after = p in staged ? staged[p] : tracked[p];
+            if (before === after) continue;
+            out.push({ path: p, before: before ?? "", after: after === null ? "" : after ?? "" });
+        }
+        return out;
+    }
+    // working vs index
+    const working = workingSnapshot(fsRoot, repo);
+    const all = new Set([...Object.keys(index), ...Object.keys(working)]);
+    const out = [];
+    for (const p of all) {
+        const before = index[p];
+        const after = working[p];
+        if (before === after) continue;
+        out.push({ path: p, before: before ?? "", after: after ?? "" });
+    }
+    return out;
+};
+
+// Remote (simulated)
+export const gitPush = (repo, branch) => {
+    const b = branch || currentBranch(repo);
+    if (!b) return { error: "cannot push detached HEAD without target" };
+    if (!repo.branches[b]) return { error: `branch '${b}' not found` };
+    const head = repo.branches[b];
+    const visit = (h) => {
+        if (!h || repo.remote.commits[h]) return;
+        const c = repo.commits[h];
+        if (!c) return;
+        repo.remote.commits[h] = { ...c };
+        c.parents.forEach(visit);
+    };
+    visit(head);
+    repo.remote.branches[b] = head;
+    // Update remote-tracking ref so the visualizer & ahead/behind logic know.
+    repo.remoteRefs = repo.remoteRefs || {};
+    repo.remoteRefs["origin/" + b] = head;
+    return { ok: true, branch: b, hash: head };
+};
+
+export const gitFetch = (repo) => {
+    // Copy any commits we don't have yet from origin → local store.
+    let newCount = 0;
+    for (const [h, c] of Object.entries(repo.remote.commits || {})) {
+        if (!repo.commits[h]) {
+            repo.commits[h] = { ...c };
+            newCount++;
+        }
+    }
+    // Update remote-tracking refs (origin/<branch>) to mirror origin's tips.
+    repo.remoteRefs = repo.remoteRefs || {};
+    for (const [b, h] of Object.entries(repo.remote.branches || {})) {
+        repo.remoteRefs["origin/" + b] = h;
+    }
+    return {
+        ok: true,
+        branches: Object.keys(repo.remote.branches || {}),
+        newCommits: newCount,
+    };
+};
+
+// Compute ahead/behind for a branch vs its remote tracking
+export const remoteAheadBehind = (repo, branch) => {
+    if (!branch) return { ahead: 0, behind: 0, hasRemote: false, hasLocal: false };
+    const localHead = repo.branches?.[branch];
+    const remoteHead = repo.remote?.branches?.[branch];
+    if (!localHead && !remoteHead) return { ahead: 0, behind: 0, hasRemote: false, hasLocal: false };
+
+    const reachable = (start, store) => {
+        const set = new Set();
+        const stack = [start];
+        while (stack.length) {
+            const h = stack.pop();
+            if (!h || set.has(h) || !store[h]) continue;
+            set.add(h);
+            for (const p of store[h].parents || []) stack.push(p);
+        }
+        return set;
+    };
+    const localSet = localHead ? reachable(localHead, repo.commits) : new Set();
+    const remoteSet = remoteHead ? reachable(remoteHead, repo.remote.commits) : new Set();
+    let ahead = 0;
+    for (const h of localSet) if (!remoteSet.has(h)) ahead++;
+    let behind = 0;
+    for (const h of remoteSet) if (!localSet.has(h)) behind++;
+    return { ahead, behind, hasRemote: !!remoteHead, hasLocal: !!localHead };
+};
+
+// Files at the tip of a remote branch
+export const remoteFilesAt = (repo, branch) => {
+    const h = repo.remote?.branches?.[branch];
+    if (!h) return {};
+    return { ...(repo.remote.commits[h]?.files || {}) };
+};
+
+// Make a commit directly on the remote — simulates "another developer pushed"
+export const remoteCommit = (repo, branch, fileChanges, message) => {
+    if (!repo.remote) return { error: "no remote" };
+    if (!message || !message.trim()) return { error: "message required" };
+    const parent = repo.remote.branches[branch];
+    if (!parent && Object.keys(fileChanges).length === 0)
+        return { error: "no files in remote commit" };
+    const baseFiles = parent ? (repo.remote.commits[parent]?.files || {}) : {};
+    const newFiles = { ...baseFiles };
+    let touched = 0;
+    for (const [p, c] of Object.entries(fileChanges)) {
+        if (c === null || c === undefined) {
+            if (p in newFiles) {
+                delete newFiles[p];
+                touched++;
+            }
+        } else if (newFiles[p] !== c) {
+            newFiles[p] = c;
+            touched++;
+        }
+    }
+    if (touched === 0) return { error: "no changes" };
+    const hash = shortHash();
+    const commit = {
+        hash,
+        parents: parent ? [parent] : [],
+        message: message.trim(),
+        files: newFiles,
+        author: "origin",
+        date: new Date().toISOString(),
+        branch,
+    };
+    repo.remote.commits[hash] = commit;
+    repo.remote.branches[branch] = hash;
+    return { ok: true, hash, commit };
+};
+
+// Remote log (commits reachable from any remote branch tip, newest first)
+export const remoteLog = (repo, branch) => {
+    if (!repo.remote) return [];
+    const tips = branch
+        ? [repo.remote.branches[branch]].filter(Boolean)
+        : Object.values(repo.remote.branches || {});
+    const seen = new Set();
+    const out = [];
+    const stack = [...tips];
+    while (stack.length) {
+        const h = stack.pop();
+        if (!h || seen.has(h)) continue;
+        seen.add(h);
+        const c = repo.remote.commits[h];
+        if (!c) continue;
+        out.push(c);
+        for (const p of c.parents || []) stack.push(p);
+    }
+    out.sort((a, b) => (a.date < b.date ? 1 : -1));
+    return out;
+};
+
+export const gitPull = (fsRoot, repo, branch) => {
+    const b = branch || currentBranch(repo);
+    if (!b) return { error: "no branch to pull into" };
+    const remoteHead = repo.remote.branches?.[b];
+    if (!remoteHead) return { error: `no remote branch 'origin/${b}'` };
+    for (const [h, c] of Object.entries(repo.remote.commits || {})) {
+        if (!repo.commits[h]) repo.commits[h] = { ...c };
+    }
+    repo.remoteRefs = repo.remoteRefs || {};
+    repo.remoteRefs["origin/" + b] = remoteHead;
+
+    if (!repo.branches[b]) {
+        repo.branches[b] = remoteHead;
+        if (currentBranch(repo) === b) applyCommitToFs(fsRoot, repo, remoteHead);
+        reflog(repo, "pull", null, remoteHead, `created ${b} from origin`);
+        return { ok: true, ff: true, hash: remoteHead };
+    }
+    if (currentBranch(repo) !== b) {
+        return {
+            error: `pull only supports pulling into the current branch (you are on '${currentBranch(repo)}')`,
+        };
+    }
+    const r = mergeCommitIntoHead(fsRoot, repo, remoteHead, "origin/" + b);
+    if (r.error) return r;
+    if (r.alreadyUpToDate) return { ok: true, message: r.message };
+    return { ok: true, ff: !!r.ff, hash: r.hash };
+};
+
+export const gitClone = (fsRoot, url) => {
+    const name = (url.split("/").pop() || "repo").replace(/\.git$/, "");
+    const repo = newRepo("/home/student/" + name);
+    const hash = shortHash();
+    const files = {
+        "README.md": `# ${name}\n\nA cloned repository (simulated).\n`,
+    };
+    repo.commits[hash] = {
+        hash,
+        parents: [],
+        message: "Initial commit",
+        files,
+        author: "remote",
+        date: new Date().toISOString(),
+        branch: "main",
+    };
+    repo.branches.main = hash;
+    repo.HEAD = { type: "branch", ref: "main" };
+    repo.tracked = { ...files };
+    repo.remote.branches.main = hash;
+    repo.remote.commits[hash] = { ...repo.commits[hash] };
+    applyCommitToFs(fsRoot, repo, hash);
+    reflog(repo, "clone", null, hash, url);
+    return { ok: true, repo, name };
+};
+
+// Remote management (simulated)
+export const gitRemote = (repo, args) => {
+    const sub = args[0];
+    if (!sub || sub === "-v" || sub === "--verbose") {
+        const out = Object.entries(repo.remotes || {}).map(([n, r]) => ({
+            name: n,
+            url: r.url,
+        }));
+        return { ok: true, list: out };
+    }
+    if (sub === "add") {
+        const name = args[1];
+        const url = args[2];
+        if (!name || !url) return { error: "usage: git remote add <name> <url>" };
+        repo.remotes[name] = { url };
+        return { ok: true, added: { name, url } };
+    }
+    if (sub === "remove" || sub === "rm") {
+        const name = args[1];
+        if (!repo.remotes[name]) return { error: `remote '${name}' not found` };
+        delete repo.remotes[name];
+        return { ok: true, removed: name };
+    }
+    return { error: `unknown remote subcommand '${sub}'` };
+};
+
+// Config
+export const gitConfig = (repo, args) => {
+    const { rest } = args;
+    if (rest.length === 0) return { ok: true, list: repo.config };
+    const key = rest[0];
+    const val = rest.slice(1).join(" ");
+    if (!val) {
+        // get
+        if (key === "user.name") return { ok: true, value: repo.config.user.name };
+        if (key === "user.email") return { ok: true, value: repo.config.user.email };
+        return { error: `unknown key ${key}` };
+    }
+    if (key === "user.name") repo.config.user.name = val;
+    else if (key === "user.email") repo.config.user.email = val;
+    else return { error: `unknown key ${key}` };
+    return { ok: true, set: { key, val } };
+};
+
+// ============================================================================
+// GRAPH LAYOUT — proper lane assignment so branches & merges don't overlap.
+// ============================================================================
+const topoOrder = (repo) => {
+    // Walk all commits reachable from any "tip": local branches, tags,
+    // remote-tracking refs (origin/*) and a detached HEAD.
+    const roots = new Set();
+    for (const h of Object.values(repo.branches)) roots.add(h);
+    for (const h of Object.values(repo.tags || {})) roots.add(h);
+    for (const h of Object.values(repo.remoteRefs || {})) roots.add(h);
+    if (repo.HEAD?.type === "detached") roots.add(repo.HEAD.ref);
+    const rootArr = [...roots]
+        .filter((h) => repo.commits[h])
+        .sort((a, b) => (repo.commits[a].date < repo.commits[b].date ? 1 : -1));
+
+    const indeg = {};
+    const children = {};
+    const visited = new Set();
+    const stack = [...rootArr];
+    while (stack.length) {
+        const h = stack.pop();
+        if (visited.has(h) || !repo.commits[h]) continue;
+        visited.add(h);
+        indeg[h] = indeg[h] || 0;
+        for (const p of repo.commits[h].parents) {
+            indeg[p] = (indeg[p] || 0) + 1;
+            children[p] = children[p] || [];
+            children[p].push(h);
+            stack.push(p);
+        }
+    }
+    // Kahn's algorithm, but among ready nodes pick the one with newest date.
+    const ready = rootArr.filter((h) => visited.has(h));
+    const childCount = {};
+    for (const h of visited) {
+        childCount[h] = 0;
+    }
+    for (const h of visited) {
+        for (const p of repo.commits[h].parents) childCount[p] = (childCount[p] || 0) + 1;
+    }
+    const order = [];
+    const inReady = new Set(ready);
+    while (ready.length) {
+        ready.sort((a, b) => (repo.commits[a].date < repo.commits[b].date ? 1 : -1));
+        const h = ready.shift();
+        inReady.delete(h);
+        order.push(h);
+        for (const p of repo.commits[h].parents) {
+            childCount[p] -= 1;
+            if (childCount[p] === 0 && !inReady.has(p)) {
+                ready.push(p);
+                inReady.add(p);
+            }
+        }
+    }
+    // Fallback: include any orphan commits (shouldn't happen) sorted by date desc
+    for (const h of Object.keys(repo.commits)) {
+        if (!order.includes(h)) order.push(h);
+    }
+    return order;
+};
+
+const assignLanes = (repo, order) => {
+    // lanes[i] = expected hash for lane i (the commit we're waiting to draw)
+    const lanes = [];
+    const result = []; // [{ hash, lane, parentLanes:[], mergeIns:[] }]
+    const alloc = (hash) => {
+        // first try existing lane already targeted at this hash
+        const existing = lanes.indexOf(hash);
+        if (existing !== -1) return existing;
+        // first empty lane
+        const empty = lanes.indexOf(null);
+        if (empty !== -1) {
+            lanes[empty] = hash;
+            return empty;
+        }
+        lanes.push(hash);
+        return lanes.length - 1;
+    };
+    for (const h of order) {
+        const c = repo.commits[h];
+        // My lane: if some lane targets me, use first such; else allocate
+        let myLane = lanes.indexOf(h);
+        if (myLane === -1) {
+            myLane = lanes.indexOf(null);
+            if (myLane === -1) {
+                myLane = lanes.length;
+                lanes.push(null);
+            }
+        }
+        // Collect & free other lanes that also target me (converging from children)
+        const mergeIns = [];
+        for (let i = 0; i < lanes.length; i++) {
+            if (i !== myLane && lanes[i] === h) {
+                mergeIns.push(i);
+                lanes[i] = null;
+            }
+        }
+        lanes[myLane] = null; // we're emitting it now
+
+        // Assign parents
+        const parents = c.parents || [];
+        const parentLanes = [];
+        if (parents.length === 0) {
+            // root commit; lane closes
+        } else {
+            // First parent stays in our lane unless another lane already targets it.
+            const first = parents[0];
+            const firstExisting = lanes.indexOf(first);
+            if (firstExisting !== -1) {
+                parentLanes.push(firstExisting);
+            } else {
+                lanes[myLane] = first;
+                parentLanes.push(myLane);
+            }
+            for (let k = 1; k < parents.length; k++) {
+                const pHash = parents[k];
+                const existing = lanes.indexOf(pHash);
+                if (existing !== -1) {
+                    parentLanes.push(existing);
+                } else {
+                    parentLanes.push(alloc(pHash));
+                }
+            }
+        }
+        result.push({ hash: h, lane: myLane, parentLanes, mergeIns });
+        // Trim trailing nulls
+        while (lanes.length && lanes[lanes.length - 1] === null) lanes.pop();
+    }
+    return result;
+};
+
+export const buildGraph = (repo) => {
+    repo = ensureRepoShape(repo);
+    if (!repo.commits || Object.keys(repo.commits).length === 0) {
+        return {
+            nodes: [],
+            branches: [],
+            tags: [],
+            head: null,
+            headType: repo.HEAD?.type,
+            headRef: repo.HEAD?.ref,
+            maxLane: 0,
+        };
+    }
+    const order = topoOrder(repo);
+    const placement = assignLanes(repo, order);
+    const rowByHash = {};
+    placement.forEach((p, i) => {
+        rowByHash[p.hash] = i;
+    });
+
+    // Color per commit: branch color if branch known, else lane color
+    const nodes = placement.map((p, i) => {
+        const c = repo.commits[p.hash];
+        const branchColor = repo.branchColors?.[c.branch];
+        return {
+            id: c.hash,
+            message: c.message,
+            parents: c.parents,
+            branch: c.branch,
+            date: c.date,
+            author: c.author,
+            lane: p.lane,
+            parentLanes: p.parentLanes,
+            row: i,
+            color: branchColor || COLORS[p.lane % COLORS.length],
+        };
+    });
+
+    const maxLane = Math.max(0, ...nodes.map((n) => n.lane));
+
+    const branches = Object.entries(repo.branches).map(([name, hash]) => {
+        const node = nodes.find((n) => n.id === hash);
+        return {
+            name,
+            hash,
+            color: repo.branchColors[name] || (node ? node.color : COLORS[0]),
+            row: rowByHash[hash],
+            kind: "branch",
+        };
+    });
+
+    const remoteRefs = Object.entries(repo.remoteRefs || {}).map(([name, hash]) => {
+        const node = nodes.find((n) => n.id === hash);
+        return {
+            name,
+            hash,
+            color: "#94A3B8", // slate-400 for origin/* refs
+            row: rowByHash[hash],
+            kind: "remote",
+        };
+    });
+
+    const tags = Object.entries(repo.tags || {}).map(([name, hash]) => ({
+        name,
+        hash,
+        row: rowByHash[hash],
+    }));
+
+    return {
+        nodes,
+        branches,
+        remoteRefs,
+        tags,
+        head: headCommit(repo),
+        headType: repo.HEAD?.type,
+        headRef: repo.HEAD?.ref,
+        maxLane,
+    };
+};
