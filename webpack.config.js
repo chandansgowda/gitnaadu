@@ -1,5 +1,6 @@
 const path = require("path");
 const HtmlWebpackPlugin = require("html-webpack-plugin");
+const CopyWebpackPlugin = require("copy-webpack-plugin");
 const ReactRefreshWebpackPlugin = require("@pmmmwh/react-refresh-webpack-plugin");
 
 module.exports = (env, argv) => {
@@ -47,6 +48,10 @@ module.exports = (env, argv) => {
       new HtmlWebpackPlugin({
         template: "./public/index.html",
         favicon: "./public/favicon.svg",
+      }),
+      // Copy static social/SEO assets (served verbatim at the site root).
+      new CopyWebpackPlugin({
+        patterns: [{ from: "public/og-image.png", to: "og-image.png" }],
       }),
       isDev && new ReactRefreshWebpackPlugin(),
     ].filter(Boolean),
