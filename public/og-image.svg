@@ -74,8 +74,8 @@
     </g>
   </g>
 
-  <text x="90" y="262" font-family="'Helvetica Neue',Helvetica,Arial,sans-serif" font-size="22" font-weight="700" letter-spacing="6" fill="#ffd700">ENGINEERING IN KANNADA</text>
-  <text x="84" y="416" font-family="'Helvetica Neue',Helvetica,Arial,sans-serif" font-size="132" font-weight="800" letter-spacing="-3"><tspan fill="#ffffff">Git</tspan><tspan fill="#ffd700">Naadu</tspan></text>
-  <text x="90" y="484" font-family="'Helvetica Neue',Helvetica,Arial,sans-serif" font-size="33" font-weight="500" fill="#a1a1aa">See Git happen — a browser-only Git simulator &amp; playground.</text>
+  <text x="84" y="336" font-family="'Helvetica Neue',Helvetica,Arial,sans-serif" font-size="132" font-weight="800" letter-spacing="-3"><tspan fill="#ffffff">Git</tspan><tspan fill="#ffd700">Naadu</tspan></text>
+  <text x="90" y="386" font-family="'Helvetica Neue',Helvetica,Arial,sans-serif" font-size="22" font-weight="700" letter-spacing="6" fill="#ffd700">ENGINEERING IN KANNADA</text>
+  <text x="90" y="456" font-family="'Helvetica Neue',Helvetica,Arial,sans-serif" font-size="33" font-weight="500" fill="#a1a1aa">See Git happen — a browser-only Git simulator &amp; playground.</text>
   <text x="90" y="562" font-family="'SF Mono',Menlo,Consolas,monospace" font-size="24" fill="#52525b"><tspan fill="#34d399">student@gitnaadu</tspan>:~/portfolio$ git commit -m "namaskara"</text>
 </svg>
