@@ -24,7 +24,14 @@ module.exports = (env, argv) => {
         {
           test: /\.jsx?$/,
           exclude: /node_modules/,
-          use: "babel-loader",
+          use: {
+            loader: "babel-loader",
+            options: {
+              // Fast Refresh is dev-only. Gating it on webpack's `isDev`
+              // (driven by --mode) keeps $RefreshReg$ out of prod builds.
+              plugins: isDev ? [require.resolve("react-refresh/babel")] : [],
+            },
+          },
         },
         {
           test: /\.css$/,
