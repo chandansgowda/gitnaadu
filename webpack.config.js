@@ -49,9 +49,16 @@ module.exports = (env, argv) => {
         template: "./public/index.html",
         favicon: "./public/favicon.svg",
       }),
-      // Copy static social/SEO assets (served verbatim at the site root).
+      // Copy static social/SEO + installable-app assets (served verbatim at
+      // the site root).
       new CopyWebpackPlugin({
-        patterns: [{ from: "public/og-image.png", to: "og-image.png" }],
+        patterns: [
+          "og-image.png",
+          "manifest.webmanifest",
+          "icon-192.png",
+          "icon-512.png",
+          "apple-touch-icon.png",
+        ].map((f) => ({ from: `public/${f}`, to: f })),
       }),
       isDev && new ReactRefreshWebpackPlugin(),
     ].filter(Boolean),

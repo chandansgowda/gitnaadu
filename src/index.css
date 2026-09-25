@@ -15,6 +15,10 @@ body,
 }
 
 body {
+    overscroll-behavior: none;
+    -webkit-tap-highlight-color: transparent;
+    -webkit-text-size-adjust: 100%;
+    touch-action: manipulation;
     font-family:
         "Outfit",
         ui-sans-serif,
@@ -110,6 +114,26 @@ code,
     pointer-events: none;
     mix-blend-mode: overlay;
     border-radius: inherit;
+}
+
+/* ------- Mobile app shell ------- */
+/* Height of the visible viewport; useVisualViewport() sets --app-height so
+   the layout shrinks above the on-screen keyboard. */
+.app-height {
+    height: 100vh;
+    height: var(--app-height, 100dvh);
+}
+.pt-safe {
+    padding-top: env(safe-area-inset-top);
+}
+.pb-safe {
+    padding-bottom: env(safe-area-inset-bottom);
+}
+.no-scrollbar {
+    scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+    display: none;
 }
 
 /* Glow utility */

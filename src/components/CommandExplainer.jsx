@@ -1,6 +1,7 @@
 import { motion, AnimatePresence } from "framer-motion";
 import { GitCommit, GitBranch, GitMerge, GitPullRequest, Plus, RotateCcw, Trash2, Cloud, Sparkles, X, Tag, Archive, FileDiff, FileSearch, Edit3, Cherry, History } from "lucide-react";
 import { useEffect } from "react";
+import { cn } from "@/lib/utils";
 
 // Maps a highlight kind to an explanation card.
 const EXPLAIN = {
@@ -121,7 +122,7 @@ const EXPLAIN = {
     },
 };
 
-export const CommandExplainer = ({ highlight, onClose }) => {
+export const CommandExplainer = ({ highlight, onClose, className, action }) => {
     const cfg = highlight ? EXPLAIN[highlight.kind] : null;
 
     // Auto-dismiss after 7s
@@ -140,13 +141,16 @@ export const CommandExplainer = ({ highlight, onClose }) => {
                     animate={{ opacity: 1, y: 0 }}
                     exit={{ opacity: 0, y: 24 }}
                     transition={{ type: "spring", stiffness: 380, damping: 30 }}
-                    className="absolute top-16 right-4 z-30 max-w-sm w-[min(22rem,calc(100%-2rem))] pointer-events-none"
+                    className={cn(
+                        "absolute top-16 right-4 z-30 max-w-sm w-[min(22rem,calc(100%-2rem))] pointer-events-none",
+                        className,
+                    )}
                     data-testid="command-explainer"
                 >
                     <div className="bg-surface-2/90 backdrop-blur-xl border border-yellow/40 rounded-md shadow-2xl shadow-black/60 overflow-hidden pointer-events-auto">
                         <div className="absolute inset-0 bg-gradient-to-br from-yellow/5 to-transparent pointer-events-none" />
-                        <div className="relative p-4 flex items-start gap-3">
-                            <div className="w-9 h-9 rounded-md bg-yellow/15 border border-yellow/40 flex items-center justify-center flex-shrink-0">
+                        <div className="relative p-3 sm:p-4 flex items-start gap-3">
+                            <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-md bg-yellow/15 border border-yellow/40 flex items-center justify-center flex-shrink-0">
                                 <cfg.icon className="w-4 h-4 text-yellow" />
                             </div>
                             <div className="flex-1 min-w-0">
@@ -168,10 +172,19 @@ export const CommandExplainer = ({ highlight, onClose }) => {
                                         "{highlight.message}"
                                     </div>
                                 )}
+                                {action && (
+                                    <button
+                                        onClick={action.onClick}
+                                        className="mt-2.5 inline-flex items-center gap-1 h-8 px-3 rounded-md bg-yellow text-black text-xs font-bold active:bg-yellow/80"
+                                        data-testid="explainer-action"
+                                    >
+                                        {action.label} →
+                                    </button>
+                                )}
                             </div>
                             <button
                                 onClick={onClose}
-                                className="text-zinc-500 hover:text-white transition-colors flex-shrink-0"
+                                className="text-zinc-500 hover:text-white transition-colors flex-shrink-0 -m-2 p-2"
                                 data-testid="explainer-close"
                                 aria-label="Dismiss"
                             >

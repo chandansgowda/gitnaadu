@@ -37,7 +37,7 @@ export const WelcomeOverlay = ({ open, onOpenChange }) => {
     return (
         <Dialog open={open} onOpenChange={(o) => (o ? onOpenChange(o) : close())}>
             <DialogContent
-                className="max-w-2xl bg-surface-1 border-surface-3 text-white p-0 overflow-hidden"
+                className="max-w-2xl w-[calc(100%-1.5rem)] max-h-[calc(100dvh-1.5rem)] rounded-2xl sm:rounded-lg bg-surface-1 border-surface-3 text-white p-0 overflow-y-auto overflow-x-hidden"
                 data-testid="welcome-overlay"
             >
                 <div className="relative">
@@ -50,19 +50,19 @@ export const WelcomeOverlay = ({ open, onOpenChange }) => {
                         }}
                     />
                     <div className="absolute inset-0 bg-gradient-to-b from-transparent via-surface-1/80 to-surface-1" />
-                    <div className="relative p-7 md:p-10">
-                        <DialogHeader className="space-y-3">
+                    <div className="relative p-5 sm:p-7 md:p-10">
+                        <DialogHeader className="space-y-3 text-left">
                             <div className="flex items-center gap-2">
                                 <span className="text-[11px] font-bold uppercase tracking-[0.3em] text-yellow">
                                     Engineering in Kannada
                                 </span>
                             </div>
-                            <DialogTitle className="font-black text-4xl md:text-5xl tracking-tight leading-[1.05]">
+                            <DialogTitle className="font-black text-3xl sm:text-4xl md:text-5xl tracking-tight leading-[1.05]">
                                 Welcome to{" "}
                                 <span className="text-yellow">GitNaadu.</span>
                             </DialogTitle>
                         </DialogHeader>
-                        <p className="text-zinc-300 text-sm md:text-base mt-4 max-w-lg leading-relaxed">
+                        <p className="text-zinc-300 text-sm md:text-base mt-3 sm:mt-4 max-w-lg leading-relaxed">
                             A futuristic, browser-only playground to{" "}
                             <span className="text-white font-semibold">
                                 see Git happen
@@ -70,35 +70,37 @@ export const WelcomeOverlay = ({ open, onOpenChange }) => {
                             instead of memorising commands. Type, experiment,
                             break things and learn.
                         </p>
-                        <div className="grid sm:grid-cols-3 gap-3 mt-7">
+                        <div className="grid sm:grid-cols-3 gap-2 sm:gap-3 mt-5 sm:mt-7">
                             {tips.map((t, i) => (
                                 <motion.div
                                     key={t.title}
                                     initial={{ opacity: 0, y: 12 }}
                                     animate={{ opacity: 1, y: 0 }}
                                     transition={{ delay: 0.15 + i * 0.07 }}
-                                    className="rounded-md border border-surface-3 bg-surface-2/60 p-4"
+                                    className="rounded-md border border-surface-3 bg-surface-2/60 p-3 sm:p-4 flex sm:block items-start gap-3"
                                 >
-                                    <div className="w-8 h-8 rounded-md bg-yellow/15 border border-yellow/30 flex items-center justify-center mb-2.5">
+                                    <div className="w-8 h-8 rounded-md bg-yellow/15 border border-yellow/30 flex items-center justify-center sm:mb-2.5 flex-shrink-0">
                                         <t.icon className="w-4 h-4 text-yellow" />
                                     </div>
-                                    <div className="font-bold text-sm text-white">
-                                        {t.title}
+                                    <div className="min-w-0">
+                                        <div className="font-bold text-sm text-white">
+                                            {t.title}
+                                        </div>
+                                        <p className="text-xs text-zinc-400 leading-relaxed mt-1">
+                                            {t.text}
+                                        </p>
                                     </div>
-                                    <p className="text-xs text-zinc-400 leading-relaxed mt-1">
-                                        {t.text}
-                                    </p>
                                 </motion.div>
                             ))}
                         </div>
-                        <div className="mt-7 flex items-center justify-between gap-4">
+                        <div className="mt-5 sm:mt-7 flex items-center justify-between gap-4">
                             <code className="font-mono text-xs text-zinc-500 hidden md:block">
                                 Tip: press ↑ ↓ for history, Tab for path
                                 completion
                             </code>
                             <Button
                                 onClick={close}
-                                className="bg-yellow text-black hover:bg-yellow/90 font-semibold px-5"
+                                className="bg-yellow text-black hover:bg-yellow/90 font-semibold px-5 w-full md:w-auto h-11 md:h-9"
                                 data-testid="welcome-start-btn"
                             >
                                 Open the terminal{" "}

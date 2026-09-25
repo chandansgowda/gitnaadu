@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useRef } from "react";
 import { motion } from "framer-motion";
 import { Save, FileText, Undo2, AlertCircle, CheckCircle2, X } from "lucide-react";
 import { Button } from "./ui/button";
@@ -29,6 +29,7 @@ export const Editor = ({ state, setState, path, onClose, onSaved }) => {
 
     const [draft, setDraft] = useState(node?.content || "");
     const [savedAt, setSavedAt] = useState(null);
+    const gutterRef = useRef(null);
 
     useEffect(() => {
         setDraft(node?.content || "");
@@ -103,8 +104,13 @@ export const Editor = ({ state, setState, path, onClose, onSaved }) => {
             <div className="sticky top-0 z-10 bg-surface-1/40 border-b border-surface-3/60 px-3 py-1.5 flex items-center justify-between">
                 <div className="flex items-center gap-2 min-w-0">
                     <FileText className="w-3.5 h-3.5 text-yellow flex-shrink-0" />
-                    <span className="font-mono text-[12px] text-zinc-200 truncate" data-testid="editor-file-path">
-                        {path}
+                    <span
+                        className="font-mono text-[12px] text-zinc-200 truncate"
+                        title={path}
+                        data-testid="editor-file-path"
+                    >
+                        <span className="hidden sm:inline">{path}</span>
+                        <span className="sm:hidden">{path.split("/").pop()}</span>
                     </span>
                     {dirty && (
                         <span className="px-1.5 py-0.5 text-[10px] uppercase font-bold tracking-wider rounded-sm bg-yellow/15 text-yellow border border-yellow/30">
@@ -122,10 +128,11 @@ export const Editor = ({ state, setState, path, onClose, onSaved }) => {
                         </span>
                     )}
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-1 sm:gap-2 flex-shrink-0">
                     {savedAt && !dirty && (
                         <span className="flex items-center gap-1 text-[11px] text-emerald-400">
-                            <CheckCircle2 className="w-3 h-3" /> saved
+                            <CheckCircle2 className="w-3 h-3" />
+                            <span className="hidden sm:inline">saved</span>
                         </span>
                     )}
                     <Button
@@ -136,8 +143,8 @@ export const Editor = ({ state, setState, path, onClose, onSaved }) => {
                         className="h-7 text-zinc-300 hover:text-white hover:bg-surface-2"
                         data-testid="editor-revert-btn"
                     >
-                        <Undo2 className="w-3.5 h-3.5 mr-1.5" />
-                        Revert
+                        <Undo2 className="w-3.5 h-3.5 sm:mr-1.5" />
+                        <span className="hidden sm:inline">Revert</span>
                     </Button>
                     <Button
                         size="sm"
@@ -164,7 +171,8 @@ export const Editor = ({ state, setState, path, onClose, onSaved }) => {
             </div>
             <div className="flex-1 flex min-h-0">
                 <div
-                    className="select-none text-right pr-3 pt-3 text-[11px] font-mono text-zinc-600 bg-surface-1/40 border-r border-surface-3 leading-[20px] overflow-hidden"
+                    ref={gutterRef}
+                    className="select-none text-right pr-3 pt-3 pb-3 text-[11px] font-mono text-zinc-600 bg-surface-1/40 border-r border-surface-3 leading-[20px] overflow-hidden flex-shrink-0"
                     style={{ width: 44 }}
                     aria-hidden
                 >
@@ -175,18 +183,32 @@ export const Editor = ({ state, setState, path, onClose, onSaved }) => {
                 <textarea
                     value={draft}
                     onChange={(e) => setDraft(e.target.value)}
+                    onKeyDown={(e) => {
+                        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
+                            e.preventDefault();
+                            if (dirty) save();
+                        }
+                    }}
+                    // Keep the line-number gutter aligned with the text.
+                    onScroll={(e) => {
+                        if (gutterRef.current)
+                            gutterRef.current.scrollTop = e.target.scrollTop;
+                    }}
+                    wrap="off"
                     spellCheck={false}
-                    className="flex-1 bg-transparent text-zinc-100 font-mono text-sm leading-[20px] p-3 outline-none resize-none caret-yellow"
+                    autoCapitalize="off"
+                    autoCorrect="off"
+                    className="flex-1 min-w-0 bg-transparent text-zinc-100 font-mono text-base sm:text-sm leading-[20px] p-3 outline-none resize-none caret-yellow whitespace-pre overflow-auto"
                     data-testid="editor-textarea"
                     placeholder="// empty file — start typing"
                 />
             </div>
             {repo && (
-                <div className="border-t border-surface-3 bg-surface-1/60 px-4 py-1.5 text-[11px] font-mono text-zinc-500 flex items-center justify-between">
-                    <span>
+                <div className="border-t border-surface-3 bg-surface-1/60 px-4 py-1.5 text-[11px] font-mono text-zinc-500 flex items-center justify-between gap-3">
+                    <span className="truncate">
                         repo: <span className="text-yellow">{repo.path}</span>
                     </span>
-                    <span className="flex items-center gap-1">
+                    <span className="hidden xl:flex items-center gap-1 whitespace-nowrap">
                         <AlertCircle className="w-3 h-3" />
                         Ctrl/⌘+S to save · Save then `git add .` to stage
                     </span>
@@ -194,18 +216,4 @@ export const Editor = ({ state, setState, path, onClose, onSaved }) => {
             )}
         </div>
     );
-};
-
-// Convenience: handle keyboard shortcut for save
-export const useEditorShortcut = (saveFn, dirty) => {
-    useEffect(() => {
-        const onKey = (e) => {
-            if ((e.ctrlKey || e.metaKey) && e.key === "s") {
-                e.preventDefault();
-                if (dirty) saveFn();
-            }
-        };
-        window.addEventListener("keydown", onKey);
-        return () => window.removeEventListener("keydown", onKey);
-    }, [saveFn, dirty]);
 };

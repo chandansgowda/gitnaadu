@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useRef, useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { GitBranch, GitCommit, Tag } from "lucide-react";
 import { buildGraph, findRepo } from "../lib/gitEngine";
@@ -15,6 +15,18 @@ export const GitTree = ({ state, onSelectCommit }) => {
         [state.repos, state.cwd],
     );
     const graph = useMemo(() => (repo ? buildGraph(repo) : null), [repo, state]);
+
+    // Fit the label column to the visible width so phones don't need to
+    // scroll sideways to read commit messages.
+    const scrollRef = useRef(null);
+    const [viewWidth, setViewWidth] = useState(0);
+    useEffect(() => {
+        const el = scrollRef.current;
+        if (!el || typeof ResizeObserver === "undefined") return;
+        const ro = new ResizeObserver(() => setViewWidth(el.clientWidth));
+        ro.observe(el);
+        return () => ro.disconnect();
+    }, [!!repo]);
 
     if (!repo) {
         return (
@@ -50,7 +62,9 @@ export const GitTree = ({ state, onSelectCommit }) => {
     const totalLanes = graph.maxLane + 1;
     const railWidth = PADDING_LEFT + totalLanes * LANE_WIDTH;
     const labelStart = railWidth + 16;
-    const labelWidth = 520;
+    const labelWidth = viewWidth
+        ? Math.max(200, Math.min(520, viewWidth - labelStart - 12))
+        : 520;
     const width = labelStart + labelWidth;
     const height = Math.max(280, PADDING_TOP + nodes.length * ROW_HEIGHT + 40);
 
@@ -80,6 +94,7 @@ export const GitTree = ({ state, onSelectCommit }) => {
 
     return (
         <div
+            ref={scrollRef}
             className="h-full w-full overflow-auto bg-gradient-to-b from-surface-0 to-black/30 noise relative"
             data-testid="git-tree"
         >
@@ -240,7 +255,7 @@ export const GitTree = ({ state, onSelectCommit }) => {
                                     initial={{ opacity: 0, x: -8 }}
                                     animate={{ opacity: 1, x: 0 }}
                                     transition={{ delay: 0.08, duration: 0.3 }}
-                                    className="absolute flex items-center gap-1.5 whitespace-nowrap text-left hover:bg-surface-2/40 rounded px-1 py-1 -mx-1 -my-1 transition-colors focus:outline-none focus:ring-1 focus:ring-yellow/60"
+                                    className="absolute flex items-center gap-1.5 whitespace-nowrap text-left [&>*]:flex-shrink-0 hover:bg-surface-2/40 rounded px-1 py-1 -mx-1 -my-1 transition-colors focus:outline-none focus:ring-1 focus:ring-yellow/60"
                                     style={{
                                         left: labelStart,
                                         top: y - 14,
@@ -290,7 +305,7 @@ export const GitTree = ({ state, onSelectCommit }) => {
                                     <span className="text-zinc-500 text-xs font-mono">
                                         {n.id}
                                     </span>
-                                    <span className="text-zinc-200 text-xs truncate">
+                                    <span className="text-zinc-200 text-xs truncate min-w-0 !flex-shrink">
                                         {n.message}
                                     </span>
                                 </motion.button>
