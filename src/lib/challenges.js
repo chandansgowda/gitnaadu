@@ -16,6 +16,9 @@ const all = (...fns) => (ctx) => fns.every((fn) => fn(ctx));
 const repoAt = (path) => ({ state }) => Boolean(state.repos?.[path]);
 const cwdIs = (path) => ({ state }) => state.cwd === path;
 const lastKindIs = (kind) => ({ lastHighlight }) => lastHighlight?.kind === kind;
+// With `a && b` chaining only the last command's highlight is reported, so a
+// "stage" step also accepts the highlight of the command that follows it.
+const lastKindIn = (...kinds) => ({ lastHighlight }) => kinds.includes(lastHighlight?.kind);
 const cmdMatches = (re) => ({ lastCommand }) => Boolean(lastCommand && re.test(lastCommand));
 const branchExists = (name) => ({ state }) => {
     const repo = findRepo(state.repos || {}, state.cwd);
@@ -271,7 +274,7 @@ export const CHALLENGES = [
             {
                 text: "Stage every file in the directory.",
                 hint: "git add .",
-                check: lastKindIs("git-add"),
+                check: lastKindIn("git-add", "git-commit"),
             },
             {
                 text: "Commit the staged files with a message.",

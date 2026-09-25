@@ -165,9 +165,12 @@ export const move = (root, src, dst) => {
     if (dstNode && dstNode.type === "dir") {
         finalPath = (dst.endsWith("/") ? dst.slice(0, -1) : dst) + "/" + srcNode.name;
     }
+    if (finalPath === src) return { ok: true };
+    if (finalPath.startsWith(src + "/"))
+        return { error: `cannot move '${src}' to a subdirectory of itself` };
     const srcParent = getParent(root, src);
     const dstParent = getParent(root, finalPath);
-    if (!srcParent || !dstParent)
+    if (!srcParent || !dstParent || dstParent.type !== "dir")
         return { error: `invalid path` };
     const movedName = baseName(finalPath);
     delete srcParent.children[baseName(src)];
