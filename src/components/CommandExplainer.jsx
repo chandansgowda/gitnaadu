@@ -1,6 +1,6 @@
 import { motion, AnimatePresence } from "framer-motion";
 import { GitCommit, GitBranch, GitMerge, GitPullRequest, Plus, RotateCcw, Trash2, Cloud, Sparkles, X, Tag, Archive, FileDiff, FileSearch, Edit3, Cherry, History } from "lucide-react";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { cn } from "@/lib/utils";
 
 // Maps a highlight kind to an explanation card.
@@ -125,12 +125,15 @@ const EXPLAIN = {
 export const CommandExplainer = ({ highlight, onClose, className, action }) => {
     const cfg = highlight ? EXPLAIN[highlight.kind] : null;
 
-    // Auto-dismiss after 7s
+    // Auto-dismiss after 7s. `onClose` is read through a ref: callers pass an
+    // inline arrow, and depending on it would restart the timer every render.
+    const onCloseRef = useRef(onClose);
+    onCloseRef.current = onClose;
     useEffect(() => {
         if (!cfg) return;
-        const t = setTimeout(() => onClose?.(), 7000);
+        const t = setTimeout(() => onCloseRef.current?.(), 7000);
         return () => clearTimeout(t);
-    }, [highlight, cfg, onClose]);
+    }, [highlight, cfg]);
 
     return (
         <AnimatePresence>

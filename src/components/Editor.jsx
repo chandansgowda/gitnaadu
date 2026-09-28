@@ -33,8 +33,9 @@ export const Editor = ({ state, setState, path, onClose, onSaved }) => {
 
     useEffect(() => {
         setDraft(node?.content || "");
-        setSavedAt(null);
     }, [path, node?.content]);
+
+    useEffect(() => setSavedAt(null), [path]);
 
     if (!path) {
         return (
@@ -76,23 +77,13 @@ export const Editor = ({ state, setState, path, onClose, onSaved }) => {
     const isUntracked = fileInRepoIndex && fileInRepoIndex.indexedContent === undefined;
 
     const save = () => {
-        const draftSnapshot = draft;
-        const filePath = path;
-        let didWrite = false;
-        setState(
-            (prev) => {
-                const newFs = JSON.parse(JSON.stringify(prev.fs));
-                const r = writeFile(newFs, filePath, draftSnapshot);
-                if (r.error) return prev;
-                didWrite = true;
-                return { ...prev, fs: newFs };
-            },
-            { record: true },
-        );
-        if (didWrite) {
-            setSavedAt(new Date());
-            onSaved?.();
-        }
+        // Write against the current state up front: the updater passed to
+        // setState runs later, so a flag set inside it can't be read here.
+        const newFs = JSON.parse(JSON.stringify(state.fs));
+        if (writeFile(newFs, path, draft).error) return;
+        setState((prev) => ({ ...prev, fs: newFs }), { record: true });
+        setSavedAt(new Date());
+        onSaved?.();
     };
 
     const revert = () => {
@@ -172,7 +163,9 @@ export const Editor = ({ state, setState, path, onClose, onSaved }) => {
             <div className="flex-1 flex min-h-0">
                 <div
                     ref={gutterRef}
-                    className="select-none text-right pr-3 pt-3 pb-3 text-[11px] font-mono text-zinc-600 bg-surface-1/40 border-r border-surface-3 leading-[20px] overflow-hidden flex-shrink-0"
+                    // Extra bottom padding matches the textarea's horizontal
+                    // scrollbar so both can scroll the same distance.
+                    className="select-none text-right pr-3 pt-3 pb-8 text-[11px] font-mono text-zinc-600 bg-surface-1/40 border-r border-surface-3 leading-[20px] overflow-hidden flex-shrink-0"
                     style={{ width: 44 }}
                     aria-hidden
                 >

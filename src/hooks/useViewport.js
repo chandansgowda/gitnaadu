@@ -51,7 +51,9 @@ export const useVisualViewport = () => {
                 fullHeight = 0;
             }
             fullHeight = Math.max(fullHeight, vv.height);
-            setKeyboardOpen(fullHeight - vv.height > 150);
+            // Only phones/tablets have an on-screen keyboard; on a desktop a
+            // shrinking window must not hide the bottom nav.
+            setKeyboardOpen(isTouchDevice() && fullHeight - vv.height > 150);
         };
         update();
         vv.addEventListener("resize", update);

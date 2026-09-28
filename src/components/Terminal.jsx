@@ -11,8 +11,8 @@ import {
 import { executeCommand, tabComplete } from "../lib/commands";
 import { isTouchDevice } from "../hooks/useViewport";
 
-// One-tap snippets for phones, where typing git commands is slow. A trailing
-// space means "needs an argument": the snippet is inserted, not run.
+// One-tap snippets for phones, where typing git commands is slow. Tapping one
+// fills the input (so learners see what will run); the run button sends it.
 const QUICK_COMMANDS = [
     "git status",
     "git add .",
@@ -64,7 +64,7 @@ const Line = ({ line }) => {
         );
     }
     let cls = "text-zinc-200";
-    if (line.kind === "err") cls = "text-rose-400";
+    if (line.kind === "err" || line.kind === "del") cls = "text-rose-400";
     if (line.kind === "muted") cls = "text-zinc-500";
     if (line.kind === "success") cls = "text-emerald-400";
     if (line.kind === "system") cls = "text-yellow";
@@ -151,17 +151,19 @@ export const Terminal = ({
         const { state: nextState, output, highlight } = executeCommand(state, raw);
         if (highlight) onHighlight?.(highlight);
 
-        const hasClear = output.some((l) => l.kind === "clear");
+        // `clear` wipes the screen, but output printed after it in the same
+        // `a && b` chain (e.g. `clear && ls`) should still show.
+        const lastClear = output.map((l) => l.kind).lastIndexOf("clear");
+        const hasClear = lastClear !== -1;
         const hasErr = output.some((l) => l.kind === "err");
-        const linesToAdd = [
-            { kind: "prompt", cwd: state.cwd, branch, text: raw },
-            ...output.filter((l) => l.kind !== "clear"),
-        ];
+        const linesToAdd = hasClear
+            ? output.slice(lastClear + 1)
+            : [{ kind: "prompt", cwd: state.cwd, branch, text: raw }, ...output];
         setState(
             {
                 ...nextState,
                 history: [...nextState.history, raw],
-                lines: hasClear ? [] : [...state.lines, ...linesToAdd],
+                lines: hasClear ? linesToAdd : [...state.lines, ...linesToAdd],
                 lastHighlight: highlight || nextState.lastHighlight,
                 stats: {
                     ...nextState.stats,
