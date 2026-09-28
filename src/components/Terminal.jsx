@@ -6,7 +6,6 @@ import {
     ChevronUp,
     ChevronDown,
     CornerDownLeft,
-    ArrowRightToLine,
 } from "lucide-react";
 import { executeCommand, tabComplete } from "../lib/commands";
 import { isTouchDevice } from "../hooks/useViewport";
@@ -311,7 +310,6 @@ export const Terminal = ({
                             {inputEl}
                         </div>
                         {[
-                            { icon: ArrowRightToLine, label: "Tab complete", run: complete },
                             { icon: ChevronUp, label: "Previous command", run: historyPrev },
                             { icon: ChevronDown, label: "Next command", run: historyNext },
                         ].map((k) => (
