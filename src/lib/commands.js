@@ -558,16 +558,46 @@ GIT_HANDLERS.commit = (state, args) => {
     };
 };
 
-GIT_HANDLERS.log = (state) => {
+GIT_HANDLERS.log = (state, args = []) => {
     const repo = requireRepo(state);
     if (!repo) return { state, output: [err("fatal: not a git repository")] };
-    const commits = gitLog(repo);
-    if (commits.length === 0) return { state, output: [muted("(no commits yet)")] };
-    const lines = [];
-    for (const c of commits) {
-        lines.push({ kind: "log-commit", commit: c });
+    // Supported: --oneline, -n <N>, -<N>, --max-count=<N>. Other flags
+    // (e.g. --graph, --all) are accepted and ignored.
+    let oneline = false;
+    let limit = Infinity;
+    for (let i = 0; i < args.length; i++) {
+        const a = args[i];
+        if (a === "--oneline") oneline = true;
+        else if (a === "-n" && /^\d+$/.test(args[i + 1] || "")) limit = Number(args[++i]);
+        else if (/^-\d+$/.test(a)) limit = Number(a.slice(1));
+        else if (/^--max-count=\d+$/.test(a)) limit = Number(a.split("=")[1]);
     }
-    return { state, output: lines };
+    const commits = gitLog(repo).slice(0, limit);
+    if (commits.length === 0) return { state, output: [muted("(no commits yet)")] };
+    if (oneline) {
+        const head = headCommit(repo);
+        const lines = commits.map((c) => {
+            const refs = [];
+            for (const [name, hash] of Object.entries(repo.branches)) {
+                if (hash !== c.hash) continue;
+                refs.push(
+                    repo.HEAD.type === "branch" && repo.HEAD.ref === name
+                        ? `HEAD -> ${name}`
+                        : name,
+                );
+            }
+            if (repo.HEAD.type === "detached" && head === c.hash) refs.unshift("HEAD");
+            for (const [name, hash] of Object.entries(repo.tags || {}))
+                if (hash === c.hash) refs.push(`tag: ${name}`);
+            const firstLine = String(c.message || "").split("\n")[0];
+            return out(`${c.hash}${refs.length ? ` (${refs.join(", ")})` : ""} ${firstLine}`);
+        });
+        return { state, output: lines };
+    }
+    return {
+        state,
+        output: commits.map((c) => ({ kind: "log-commit", commit: c })),
+    };
 };
 
 GIT_HANDLERS.branch = (state, args) => {

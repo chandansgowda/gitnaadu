@@ -19,7 +19,13 @@ const lastKindIs = (kind) => ({ lastHighlight }) => lastHighlight?.kind === kind
 // With `a && b` chaining only the last command's highlight is reported, so a
 // "stage" step also accepts the highlight of the command that follows it.
 const lastKindIn = (...kinds) => ({ lastHighlight }) => kinds.includes(lastHighlight?.kind);
-const cmdMatches = (re) => ({ lastCommand }) => Boolean(lastCommand && re.test(lastCommand));
+// Checked against each command of an `a && b` chain as well as the whole line.
+const cmdMatches = (re) => ({ lastCommand }) =>
+    Boolean(
+        lastCommand &&
+            (re.test(lastCommand) ||
+                lastCommand.split("&&").some((part) => re.test(part))),
+    );
 const branchExists = (name) => ({ state }) => {
     const repo = findRepo(state.repos || {}, state.cwd);
     return Boolean(repo?.branches?.[name]);

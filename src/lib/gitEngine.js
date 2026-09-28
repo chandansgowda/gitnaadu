@@ -1251,7 +1251,6 @@ const topoOrder = (repo) => {
         }
     }
     // Kahn's algorithm, but among ready nodes pick the one with newest date.
-    const ready = rootArr.filter((h) => visited.has(h));
     const childCount = {};
     for (const h of visited) {
         childCount[h] = 0;
@@ -1259,6 +1258,9 @@ const topoOrder = (repo) => {
     for (const h of visited) {
         for (const p of repo.commits[h].parents) childCount[p] = (childCount[p] || 0) + 1;
     }
+    // A tip that is an ancestor of another tip (e.g. main behind feature)
+    // must wait for its children, or it would be drawn above them.
+    const ready = rootArr.filter((h) => visited.has(h) && childCount[h] === 0);
     const order = [];
     const inReady = new Set(ready);
     while (ready.length) {
@@ -1274,8 +1276,10 @@ const topoOrder = (repo) => {
             }
         }
     }
-    // Fallback: include any orphan commits (shouldn't happen) sorted by date desc
-    for (const h of Object.keys(repo.commits)) {
+    // Safety net for reachable commits Kahn's walk missed. Commits no ref
+    // reaches (abandoned by rebase or reset --hard) are left out, as in
+    // `git log --all`.
+    for (const h of visited) {
         if (!order.includes(h)) order.push(h);
     }
     return order;
