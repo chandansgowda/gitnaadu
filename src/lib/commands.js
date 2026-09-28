@@ -1,5 +1,7 @@
 // Command parser & dispatcher for the simulator.
-// Returns array of output lines: { kind: 'out'|'err'|'muted'|'system'|'success', text: string }
+// Returns array of output lines: { kind: 'out'|'err'|'del'|'muted'|'system'|'success', text: string }
+// 'err' is a real error (fails an `&&` chain, plays the error sound); 'del' is
+// ordinary output shown in red (deleted / modified / untracked, diff "-" lines).
 import {
     HOME,
 } from "./initialState";
@@ -57,6 +59,7 @@ import { diffHunks, diffStats } from "./diff";
 const out = (text) => ({ kind: "out", text });
 const err = (text) => ({ kind: "err", text });
 const muted = (text) => ({ kind: "muted", text });
+const del = (text) => ({ kind: "del", text });
 const ok = (text) => ({ kind: "success", text });
 
 const tokenize = (line) => {
@@ -137,7 +140,7 @@ const splitChain = (line) => {
 };
 
 // `a && b && c`: run each command in turn, stopping at the first one that
-// prints an error. The last highlight wins.
+// fails (executeSingle's `failed` flag). The last highlight wins.
 export const executeCommand = (state, rawLine) => {
     const segments = splitChain(rawLine || "");
     if (segments.length <= 1) return executeSingle(state, rawLine);
@@ -149,12 +152,20 @@ export const executeCommand = (state, rawLine) => {
         cur = r.state;
         output = output.concat(r.output || []);
         if (r.highlight) highlight = r.highlight;
-        if ((r.output || []).some((l) => l.kind === "err")) break;
+        if (r.failed) break;
     }
     return { state: cur, output, highlight };
 };
 
+// Wraps runSingle and flags failure: a handler may say `failed` explicitly;
+// otherwise any real error line (kind "err") means the command failed.
 const executeSingle = (state, rawLine) => {
+    const r = runSingle(state, rawLine);
+    const failed = r.failed !== undefined ? !!r.failed : (r.output || []).some((l) => l.kind === "err");
+    return { ...r, failed };
+};
+
+const runSingle = (state, rawLine) => {
     const line = (rawLine || "").trim();
     if (!line) return { state, output: [] };
 
@@ -204,7 +215,7 @@ const executeSingle = (state, rawLine) => {
         // Like a real shell, every written line ends with a newline.
         const text = output
             .flatMap((l) =>
-                l.kind === "out" || l.kind === "muted" || l.kind === "success"
+                l.kind === "out" || l.kind === "muted" || l.kind === "success" || l.kind === "del"
                     ? [l.text]
                     : l.kind === "ls"
                         ? l.items.map((it) => it.name)
@@ -490,13 +501,13 @@ GIT_HANDLERS.status = (state) => {
             lines.push(muted(""));
             lines.push(out("Changes not staged for commit:"));
             s.unstaged.forEach((f) =>
-                lines.push(err(`  ${f.kind}:   ${f.path}`)),
+                lines.push(del(`  ${f.kind}:   ${f.path}`)),
             );
         }
         if (s.untracked.length) {
             lines.push(muted(""));
             lines.push(out("Untracked files:"));
-            s.untracked.forEach((p) => lines.push(err(`  ${p}`)));
+            s.untracked.forEach((p) => lines.push(del(`  ${p}`)));
         }
     }
     return { state, output: lines };
@@ -549,7 +560,7 @@ GIT_HANDLERS.commit = (state, args) => {
     }
     if (!msg) return { state, output: [err("Please provide a message: git commit -m \"your message\"")] };
     if (all) stageTracked(state.fs, repo);
-    const r = gitCommit(repo, msg, { amend });
+    const r = gitCommit(repo, msg, { amend, allowEmpty: args.includes("--allow-empty") });
     if (r.error) return { state, output: [err(r.error)] };
     return {
         state,
@@ -626,6 +637,8 @@ GIT_HANDLERS.branch = (state, args) => {
     if (rest.length === 0) {
         const r = gitBranch(repo, null);
         const lines = [];
+        if (r.list.length === 0 && repo.HEAD.type === "branch")
+            return { state, output: [muted(`(no commits yet on branch '${repo.HEAD.ref}' — it appears after your first commit)`)] };
         if (repo.HEAD.type === "detached")
             lines.push({ kind: "success", text: `* (${shortRef(repo)})` });
         r.list.forEach((b) => lines.push(
@@ -750,9 +763,31 @@ GIT_HANDLERS.revert = (state, args) => {
 GIT_HANDLERS.push = (state, args) => {
     const repo = requireRepo(state);
     if (!repo) return { state, output: [err("fatal: not a git repository")] };
-    const { rest } = splitFlags(args); // drop -u / --set-upstream / --force
+    const { flags, rest } = splitFlags(args); // -u / --set-upstream are no-ops
+    const force = flags.has("--force") || flags.has("-f") || flags.has("--force-with-lease");
     const branch = rest[1] || currentBranch(repo);
-    const r = gitPush(repo, branch);
+    const r = gitPush(repo, branch, { force });
+    if (r.rejected)
+        return {
+            state,
+            output: [
+                muted("To origin (simulated)"),
+                err(` ! [rejected]        ${r.branch} -> ${r.branch} (${r.reason})`),
+                err("error: failed to push some refs to 'origin'"),
+                ...(r.reason === "fetch first"
+                    ? [
+                          muted("hint: Updates were rejected because the remote contains work that you do not"),
+                          muted("hint: have locally. Integrate the remote changes (e.g. 'git pull ...')"),
+                          muted("hint: before pushing again."),
+                      ]
+                    : [
+                          muted("hint: Updates were rejected because the tip of your current branch is behind"),
+                          muted("hint: its remote counterpart. Integrate the remote changes (e.g. 'git pull ...')"),
+                          muted("hint: before pushing again, or use 'git push --force' to overwrite the remote."),
+                      ]),
+            ],
+            failed: true,
+        };
     if (r.error) return { state, output: [err(r.error)] };
     return {
         state,
@@ -760,7 +795,7 @@ GIT_HANDLERS.push = (state, args) => {
             muted("Enumerating objects... done."),
             muted("Writing objects... 100%"),
             ok(`To origin (simulated)`),
-            ok(`   ${r.hash}  ${r.branch} -> ${r.branch}`),
+            ok(`   ${r.forced ? "+ " : ""}${r.hash}  ${r.branch} -> ${r.branch}${r.forced ? " (forced update)" : ""}`),
         ],
         highlight: { kind: "git-push", branch: r.branch },
     };
@@ -941,7 +976,7 @@ GIT_HANDLERS.show = (state, args) => {
             lines.push(muted(`@@ -${h.oldStart} +${h.newStart} @@`));
             for (const l of h.lines) {
                 if (l.type === "add") lines.push({ kind: "success", text: "+ " + l.text });
-                else if (l.type === "del") lines.push({ kind: "err", text: "- " + l.text });
+                else if (l.type === "del") lines.push(del("- " + l.text));
                 else lines.push(muted("  " + l.text));
             }
         }
@@ -975,7 +1010,7 @@ GIT_HANDLERS.diff = (state, args) => {
             lines.push(muted(`@@ -${h.oldStart} +${h.newStart} @@`));
             for (const l of h.lines) {
                 if (l.type === "add") lines.push({ kind: "success", text: "+ " + l.text });
-                else if (l.type === "del") lines.push({ kind: "err", text: "- " + l.text });
+                else if (l.type === "del") lines.push(del("- " + l.text));
                 else lines.push(muted("  " + l.text));
             }
         }

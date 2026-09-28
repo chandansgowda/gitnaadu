@@ -226,7 +226,7 @@ export const stageTracked = (fsRoot, repo) => {
 
 export const gitCommit = (repo, message, opts = {}) => {
     const stagedKeys = Object.keys(repo.staged);
-    if (!opts.amend && stagedKeys.length === 0) {
+    if (!opts.amend && !opts.allowEmpty && stagedKeys.length === 0) {
         return { error: "nothing to commit, working tree clean (use `git add`)" };
     }
     if (!message || !message.trim()) {
@@ -234,22 +234,33 @@ export const gitCommit = (repo, message, opts = {}) => {
     }
 
     if (opts.amend) {
+        // Like real git: a brand-new commit (new hash) with the old commit's
+        // parents replaces it on the current branch / detached HEAD only. The
+        // old commit stays in the store for any other ref still pointing at it.
         const head = headCommit(repo);
-        if (!head) return { error: "no commit to amend" };
-        const headCommitObj = repo.commits[head];
-        const baseFiles = { ...headCommitObj.files };
+        if (!head || !repo.commits[head]) return { error: "fatal: You have nothing to amend." };
+        const old = repo.commits[head];
+        const baseFiles = { ...old.files };
         for (const p of stagedKeys) {
             if (repo.staged[p] === null) delete baseFiles[p];
             else baseFiles[p] = repo.staged[p];
         }
-        // Replace in-place (keep same hash, behave like real git which makes a new hash, but we keep hash for graph stability)
-        headCommitObj.message = message.trim();
-        headCommitObj.files = baseFiles;
-        headCommitObj.date = new Date().toISOString();
+        const hash = shortHash();
+        repo.commits[hash] = {
+            hash,
+            parents: [...(old.parents || [])],
+            message: message.trim(),
+            files: baseFiles,
+            author: old.author || repo.config?.user?.name || "student",
+            date: new Date().toISOString(),
+            branch: currentBranch(repo) || old.branch || "(detached)",
+        };
+        if (repo.HEAD.type === "branch") repo.branches[repo.HEAD.ref] = hash;
+        else repo.HEAD = { type: "detached", ref: hash };
         repo.tracked = { ...baseFiles };
         repo.staged = {};
-        reflog(repo, "commit (amend)", head, head, message.trim());
-        return { ok: true, hash: head, message: message.trim(), amended: true };
+        reflog(repo, "commit (amend)", head, hash, message.trim());
+        return { ok: true, hash, replaced: head, message: message.trim(), amended: true };
     }
 
     const parent = headCommit(repo);
@@ -365,6 +376,16 @@ export const gitBranch = (repo, name, opts = {}) => {
 };
 
 export const gitCheckout = (fsRoot, repo, target, opts = {}) => {
+    // No commits yet: `checkout -b <name>` just renames the unborn branch HEAD points at.
+    if (opts.newBranch && !opts.start && !headCommit(repo) && repo.HEAD.type === "branch") {
+        if (repo.branches[target]) return { error: `fatal: a branch named '${target}' already exists` };
+        if (repo.HEAD.ref === target) return { error: `fatal: a branch named '${target}' already exists` };
+        repo.HEAD = { type: "branch", ref: target };
+        repo.branchColors = repo.branchColors || {};
+        if (!repo.branchColors[target])
+            repo.branchColors[target] = COLORS[Object.keys(repo.branchColors).length % COLORS.length];
+        return { ok: true, switched: target };
+    }
     const isBranch = opts.newBranch || repo.branches[target] !== undefined;
     const hash = opts.newBranch
         ? (opts.start ? resolveRev(repo, opts.start) : headCommit(repo))
@@ -456,6 +477,7 @@ const planSwitch = (fsRoot, repo, newFiles, op) => {
     const staged = repo.staged || {};
     const carry = {};
     const conflicts = [];
+    const untrackedConflicts = [];
     const paths = new Set([...Object.keys(oldFiles), ...Object.keys(working), ...Object.keys(staged)]);
     for (const p of paths) {
         const w = p in working ? working[p] : null;
@@ -463,9 +485,15 @@ const planSwitch = (fsRoot, repo, newFiles, op) => {
         const i = p in index ? index[p] : null;
         if (w === o && i === o) continue;
         const n = p in newFiles ? newFiles[p] : null;
-        if (n !== o && n !== w) conflicts.push(p);
+        if (n !== o && n !== w) (o === null && i === null && w !== null ? untrackedConflicts : conflicts).push(p);
         else carry[p] = w;
     }
+    if (untrackedConflicts.length)
+        return {
+            error: `error: The following untracked working tree files would be overwritten by ${op}:\n${untrackedConflicts
+                .map((p) => "  " + p)
+                .join("\n")}\nPlease move or remove them before you ${op}.`,
+        };
     if (conflicts.length)
         return {
             error: `error: Your local changes to the following files would be overwritten by ${op}:\n${conflicts
@@ -812,6 +840,17 @@ export const gitStashPop = (fsRoot, repo) => {
         (p) => base[p] !== s.files[p],
     );
     const conflicts = changed.filter((p) => working[p] !== headFiles[p] && working[p] !== s.files[p]);
+    // A later commit changed the same file differently: git would need a
+    // content merge here, so refuse and keep the stash.
+    const headConflicts = changed.filter(
+        (p) => !conflicts.includes(p) && headFiles[p] !== base[p] && headFiles[p] !== s.files[p],
+    );
+    if (headConflicts.length && !conflicts.length)
+        return {
+            error: `CONFLICT (content): the stash and a later commit both changed:\n${headConflicts
+                .map((p) => "  " + p)
+                .join("\n")}\nerror: could not apply ${s.id} — commit or undo the conflicting change first.\nThe stash entry is kept in case you need it again.`,
+        };
     if (conflicts.length)
         return {
             error: `error: Your local changes to the following files would be overwritten by stash pop:\n${conflicts
@@ -873,18 +912,20 @@ export const gitRestore = (fsRoot, repo, path, opts = {}) => {
 // git rm
 export const gitRm = (fsRoot, repo, path, opts = {}) => {
     const tracked = repo.tracked || {};
-    const matches = Object.keys(tracked).filter(
+    // Anything in the index: committed files and newly staged ones.
+    const matches = Object.keys(indexedFiles(repo)).filter(
         (p) => p === path || path === "." || p.startsWith(path + "/"),
     );
     if (matches.length === 0)
-        return { error: `pathspec '${path}' did not match any tracked files` };
+        return { error: `fatal: pathspec '${path}' did not match any files` };
     if (matches.length > 1 && !opts.recursive && !matches.includes(path))
         return { error: `not removing '${path}' recursively without -r` };
     // Remove from VFS (unless --cached: only untrack it)
     const dirNode = getNode(fsRoot, repo.path);
     for (const rel of matches) {
         if (!opts.cached && dirNode) removeRel(dirNode, rel);
-        repo.staged[rel] = null;
+        if (rel in tracked) repo.staged[rel] = null;
+        else delete repo.staged[rel]; // never committed: just drop it from the index
     }
     return { ok: true, removed: matches.length };
 };
@@ -951,7 +992,13 @@ export const computeDiffPairs = (fsRoot, repo, opts = {}) => {
         // between = [a, null] compares commit a with the working tree
         const [a, b] = opts.between.map((r) => (r === null ? null : resolveRev(repo, r)));
         const A = repo.commits[a]?.files || {};
-        const B = opts.between[1] === null ? workingSnapshot(fsRoot, repo) : repo.commits[b]?.files || {};
+        // Working-tree side: only paths git knows about (in the index); untracked files never show.
+        let B;
+        if (opts.between[1] === null) {
+            const w = workingSnapshot(fsRoot, repo);
+            B = {};
+            for (const p of Object.keys(w)) if (p in index) B[p] = w[p];
+        } else B = repo.commits[b]?.files || {};
         const all = new Set([...Object.keys(A), ...Object.keys(B)]);
         return [...all]
             .filter((p) => A[p] !== B[p])
@@ -969,10 +1016,10 @@ export const computeDiffPairs = (fsRoot, repo, opts = {}) => {
         return out;
     }
     // working vs index
+    // Untracked files are not part of `git diff`.
     const working = workingSnapshot(fsRoot, repo);
-    const all = new Set([...Object.keys(index), ...Object.keys(working)]);
     const out = [];
-    for (const p of all) {
+    for (const p of Object.keys(index)) {
         const before = index[p];
         const after = working[p];
         if (before === after) continue;
@@ -982,11 +1029,23 @@ export const computeDiffPairs = (fsRoot, repo, opts = {}) => {
 };
 
 // Remote (simulated)
-export const gitPush = (repo, branch) => {
+export const gitPush = (repo, branch, opts = {}) => {
     const b = branch || currentBranch(repo);
-    if (!b) return { error: "cannot push detached HEAD without target" };
-    if (!repo.branches[b]) return { error: `branch '${b}' not found` };
+    if (!b) return { error: "fatal: You are not currently on a branch." };
+    if (!repo.branches[b]) return { error: `error: src refspec ${b} does not match any` };
     const head = repo.branches[b];
+    const remoteHead = repo.remote.branches[b];
+    let forced = false;
+    if (remoteHead && remoteHead !== head && !ancestors(repo, head).has(remoteHead)) {
+        if (!opts.force)
+            return {
+                error: "rejected",
+                rejected: true,
+                branch: b,
+                reason: repo.commits[remoteHead] ? "non-fast-forward" : "fetch first",
+            };
+        forced = true;
+    }
     const visit = (h) => {
         if (!h || repo.remote.commits[h]) return;
         const c = repo.commits[h];
@@ -999,7 +1058,7 @@ export const gitPush = (repo, branch) => {
     // Update remote-tracking ref so the visualizer & ahead/behind logic know.
     repo.remoteRefs = repo.remoteRefs || {};
     repo.remoteRefs["origin/" + b] = head;
-    return { ok: true, branch: b, hash: head };
+    return { ok: true, branch: b, hash: head, forced };
 };
 
 export const gitFetch = (repo) => {
@@ -1128,8 +1187,15 @@ export const gitPull = (fsRoot, repo, branch) => {
     repo.remoteRefs["origin/" + b] = remoteHead;
 
     if (!repo.branches[b]) {
-        repo.branches[b] = remoteHead;
-        if (currentBranch(repo) === b) applyCommitToFs(fsRoot, repo, remoteHead);
+        if (currentBranch(repo) === b) {
+            // Unborn current branch: protect local / untracked files like checkout does.
+            const plan = planSwitch(fsRoot, repo, repo.commits[remoteHead]?.files || {}, "merge");
+            if (plan.error) return plan;
+            repo.branches[b] = remoteHead;
+            finishSwitch(fsRoot, repo, remoteHead, plan);
+        } else {
+            repo.branches[b] = remoteHead;
+        }
         reflog(repo, "pull", null, remoteHead, `created ${b} from origin`);
         return { ok: true, ff: true, hash: remoteHead };
     }

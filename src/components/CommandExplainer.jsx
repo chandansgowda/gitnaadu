@@ -108,7 +108,7 @@ const EXPLAIN = {
     "git-amend": {
         icon: GitCommit,
         title: "Last commit amended",
-        body: "Your last commit was rewritten with the current staged changes / message. Don't amend commits you've already pushed.",
+        body: "Your last commit was replaced by a new one (new hash) with the staged changes / new message. Don't amend commits you've already pushed — the push would need --force.",
     },
     "git-pull": {
         icon: Cloud,

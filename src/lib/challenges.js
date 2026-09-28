@@ -627,7 +627,7 @@ export const CHALLENGES = [
         id: "amend-it",
         title: "Amend that typo",
         difficulty: "intermediate",
-        intro: "Made a typo in your commit message? `git commit --amend` rewrites the last commit without making a new one.",
+        intro: "Made a typo in your commit message? `git commit --amend` replaces the last commit with a fixed-up copy (new hash, same parent).",
         steps: [
             {
                 text: "Make a commit with a deliberately bad message.",
@@ -829,7 +829,7 @@ export const CHALLENGES = [
         steps: [
             {
                 text: "Have at least 2 commits.",
-                hint: 'git commit -m "a" && git commit -m "b"',
+                hint: 'touch a.txt && git add . && git commit -m "a" && touch b.txt && git add . && git commit -m "b"',
                 check: minCommits(2),
             },
             {
