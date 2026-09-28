@@ -6,27 +6,9 @@ import {
     ChevronUp,
     ChevronDown,
     CornerDownLeft,
-    ArrowRightToLine,
 } from "lucide-react";
 import { executeCommand, tabComplete } from "../lib/commands";
 import { isTouchDevice } from "../hooks/useViewport";
-
-// One-tap snippets for phones, where typing git commands is slow. Tapping one
-// fills the input (so learners see what will run); the run button sends it.
-const QUICK_COMMANDS = [
-    "git status",
-    "git add .",
-    'git commit -m ""',
-    "git log --oneline",
-    "ls",
-    "cd ",
-    "cd ..",
-    "git branch",
-    "git checkout ",
-    "git merge ",
-    "git diff",
-    "help",
-];
 
 // Render a single output line based on its kind
 const Line = ({ line }) => {
@@ -239,20 +221,6 @@ export const Terminal = ({
         }
     };
 
-    // Insert a quick-command snippet and park the caret where the user needs
-    // to type next (inside the quotes of `-m ""`, or at the end).
-    const insertSnippet = (snippet) => {
-        setInput(snippet);
-        setHistoryIdx(-1);
-        const caret = snippet.endsWith('""') ? snippet.length - 1 : snippet.length;
-        requestAnimationFrame(() => {
-            const el = inputRef.current;
-            if (!el) return;
-            el.focus();
-            el.setSelectionRange(caret, caret);
-        });
-    };
-
     // Buttons in the docked bar must not steal focus from the input, or the
     // on-screen keyboard would close on every tap.
     const keepFocus = (e) => e.preventDefault();
@@ -336,32 +304,12 @@ export const Terminal = ({
                     className="relative z-10 flex-shrink-0 border-t border-surface-3 bg-surface-1/95 backdrop-blur-md"
                     data-testid="terminal-dock"
                 >
-                    <div
-                        className="flex gap-1.5 overflow-x-auto no-scrollbar px-3 pt-2 pb-1.5"
-                        data-testid="terminal-quick-commands"
-                    >
-                        {QUICK_COMMANDS.map((cmd) => (
-                            <button
-                                key={cmd}
-                                type="button"
-                                onMouseDown={keepFocus}
-                                onClick={(e) => {
-                                    e.stopPropagation();
-                                    insertSnippet(cmd);
-                                }}
-                                className="flex-shrink-0 h-8 px-3 rounded-full border border-surface-3 bg-surface-2 font-mono text-xs text-zinc-200 active:bg-yellow active:text-black active:border-yellow whitespace-nowrap"
-                            >
-                                {cmd.trim()}
-                            </button>
-                        ))}
-                    </div>
-                    <div className="flex items-center gap-1.5 px-3 pb-2">
+                    <div className="flex items-center gap-1.5 px-3 py-2">
                         <div className="flex-1 min-w-0 flex items-center gap-2 h-11 px-3 rounded-xl bg-surface-0 border border-surface-3 focus-within:border-yellow/60">
                             <span className="font-mono text-sm text-yellow select-none">❯</span>
                             {inputEl}
                         </div>
                         {[
-                            { icon: ArrowRightToLine, label: "Tab complete", run: complete },
                             { icon: ChevronUp, label: "Previous command", run: historyPrev },
                             { icon: ChevronDown, label: "Next command", run: historyNext },
                         ].map((k) => (
