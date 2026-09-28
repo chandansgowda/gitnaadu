@@ -67,7 +67,7 @@ HEAD can be **detached** — engine functions and any new code reading HEAD must
 
 ### Layout & challenges
 
-Below Tailwind's `lg` breakpoint (`useIsMobile` in `src/hooks/useViewport.js`) `App.js` renders a separate phone layout: compact `Header` (`isMobile`), one full-screen view at a time chosen by `MobileNav` (bottom tabs; `tab` gains a `"terminal"` value), and a docked terminal input with quick-command chips. On phones a `highlight` badges the target tab instead of switching away from the terminal. `useVisualViewport` sets `--app-height` so the layout sits above the on-screen keyboard. The workspace panels are defined once in `panels` and shared by both layouts.
+Below Tailwind's `lg` breakpoint (`useIsMobile` in `src/hooks/useViewport.js`) `App.js` renders a separate phone layout: compact `Header` (`isMobile`), one full-screen view at a time chosen by `MobileNav` (bottom tabs; `tab` gains a `"terminal"` value), and a docked terminal input with Tab / history / run buttons. On phones a `highlight` badges the target tab instead of switching away from the terminal. `useVisualViewport` sets `--app-height` so the layout sits above the on-screen keyboard. The workspace panels are defined once in `panels` and shared by both layouts.
 
 
 `App.js` is a two-pane shell: `Header` on top, left = `Terminal`, right = tabbed workspace (Git Tree / Files / Editor / Diff / Remote) whose active tab is `tab` state auto-driven by `highlight`, then `StatusBar` and overlay dialogs (`WelcomeOverlay`, `ChallengePanel`).
