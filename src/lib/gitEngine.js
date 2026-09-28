@@ -20,7 +20,7 @@
 //
 // Commit: { hash, parents:[hash], message, files:{[relPath]:content}, author, date, branch }
 
-import { getNode, walkFiles } from "./filesystem";
+import { getNode, walkFiles, ensureDir } from "./filesystem";
 
 const COLORS = [
     "#FFD700",
@@ -156,7 +156,8 @@ export const status = (fsRoot, repo) => {
 
     for (const p of Object.keys(working)) {
         const stagedVal = p in staged ? staged[p] : tracked[p];
-        if (stagedVal === undefined) {
+        // not in the index (never added, or removed with `git rm --cached`)
+        if (stagedVal === undefined || stagedVal === null) {
             untracked.push(p);
         } else if (working[p] !== stagedVal) {
             unstaged.push({ path: p, kind: "modified" });
@@ -175,27 +176,26 @@ export const gitAdd = (fsRoot, repo, target) => {
     const tracked = repo.tracked || {};
     let matched = [];
     let deletedStaged = 0;
-    if (target === "." || target === "-A" || target === "--all") {
-        matched = Object.keys(working);
-        for (const p of Object.keys(tracked)) {
-            if (!(p in working) && repo.staged[p] !== null) {
-                repo.staged[p] = null;
-                deletedStaged++;
-            }
+    const all = target === "." || target === "-A" || target === "--all";
+    let t = target.startsWith("./") ? target.slice(2) : target;
+    t = t.replace(/\/+$/, "");
+    const matches = (p) => all || p === t || p.startsWith(t + "/");
+    matched = Object.keys(working).filter(matches);
+    // Also stage deletions of tracked files (under target) missing in working tree
+    for (const p of Object.keys(tracked)) {
+        if (!matches(p) || p in working) continue;
+        if (repo.staged[p] !== null) {
+            repo.staged[p] = null;
+            deletedStaged++;
         }
-    } else {
-        const t = target.startsWith("./") ? target.slice(2) : target;
-        for (const p of Object.keys(working)) {
-            if (p === t || p.startsWith(t + "/")) matched.push(p);
-        }
-        // Also stage deletion if target was tracked but missing in working tree
-        if (matched.length === 0 && (t in tracked)) {
-            if (repo.staged[t] !== null) {
-                repo.staged[t] = null;
-                deletedStaged = 1;
-            }
-            matched = [t];
-        }
+        matched.push(p);
+    }
+    // A staged new file that was since deleted: just drop it from the index
+    for (const p of Object.keys(repo.staged)) {
+        if (!matches(p) || p in working || p in tracked) continue;
+        delete repo.staged[p];
+        deletedStaged++;
+        matched.push(p);
     }
     if (matched.length === 0 && deletedStaged === 0)
         return { error: `fatal: pathspec '${target}' did not match any files` };
@@ -206,16 +206,27 @@ export const gitAdd = (fsRoot, repo, target) => {
         if (!(p in working)) continue;
         const currentlyStaged = p in repo.staged ? repo.staged[p] : tracked[p];
         if (currentlyStaged !== working[p]) {
-            repo.staged[p] = working[p];
+            if (p in tracked && tracked[p] === working[p]) delete repo.staged[p];
+            else repo.staged[p] = working[p];
             changed++;
         }
     }
     return { ok: true, added: changed, matched: matched.length };
 };
 
+// Stage every modification / deletion of already-tracked files (`git commit -a`).
+export const stageTracked = (fsRoot, repo) => {
+    const working = workingSnapshot(fsRoot, repo);
+    for (const [p, content] of Object.entries(repo.tracked || {})) {
+        if (!(p in working)) repo.staged[p] = null;
+        else if (working[p] !== content) repo.staged[p] = working[p];
+        else delete repo.staged[p];
+    }
+};
+
 export const gitCommit = (repo, message, opts = {}) => {
     const stagedKeys = Object.keys(repo.staged);
-    if (!opts.amend && stagedKeys.length === 0) {
+    if (!opts.amend && !opts.allowEmpty && stagedKeys.length === 0) {
         return { error: "nothing to commit, working tree clean (use `git add`)" };
     }
     if (!message || !message.trim()) {
@@ -223,22 +234,33 @@ export const gitCommit = (repo, message, opts = {}) => {
     }
 
     if (opts.amend) {
+        // Like real git: a brand-new commit (new hash) with the old commit's
+        // parents replaces it on the current branch / detached HEAD only. The
+        // old commit stays in the store for any other ref still pointing at it.
         const head = headCommit(repo);
-        if (!head) return { error: "no commit to amend" };
-        const headCommitObj = repo.commits[head];
-        const baseFiles = { ...headCommitObj.files };
+        if (!head || !repo.commits[head]) return { error: "fatal: You have nothing to amend." };
+        const old = repo.commits[head];
+        const baseFiles = { ...old.files };
         for (const p of stagedKeys) {
             if (repo.staged[p] === null) delete baseFiles[p];
             else baseFiles[p] = repo.staged[p];
         }
-        // Replace in-place (keep same hash, behave like real git which makes a new hash, but we keep hash for graph stability)
-        headCommitObj.message = message.trim();
-        headCommitObj.files = baseFiles;
-        headCommitObj.date = new Date().toISOString();
+        const hash = shortHash();
+        repo.commits[hash] = {
+            hash,
+            parents: [...(old.parents || [])],
+            message: message.trim(),
+            files: baseFiles,
+            author: old.author || repo.config?.user?.name || "student",
+            date: new Date().toISOString(),
+            branch: currentBranch(repo) || old.branch || "(detached)",
+        };
+        if (repo.HEAD.type === "branch") repo.branches[repo.HEAD.ref] = hash;
+        else repo.HEAD = { type: "detached", ref: hash };
         repo.tracked = { ...baseFiles };
         repo.staged = {};
-        reflog(repo, "commit (amend)", head, head, message.trim());
-        return { ok: true, hash: head, message: message.trim(), amended: true };
+        reflog(repo, "commit (amend)", head, hash, message.trim());
+        return { ok: true, hash, replaced: head, message: message.trim(), amended: true };
     }
 
     const parent = headCommit(repo);
@@ -281,7 +303,8 @@ export const gitLog = (repo, limit = 200) => {
         for (const p of repo.commits[h].parents) stack.push(p);
         if (out.length >= limit) break;
     }
-    out.sort((a, b) => (a.date < b.date ? 1 : -1));
+    // Newest first; ties (same-millisecond commits) keep walk order, child before parent.
+    out.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
     return out;
 };
 
@@ -344,8 +367,8 @@ export const gitBranch = (repo, name, opts = {}) => {
         return { ok: true, renamed: { from, to: name } };
     }
     if (repo.branches[name]) return { error: `branch '${name}' already exists.` };
-    const head = headCommit(repo);
-    if (!head) return { error: "Not a valid object name: 'HEAD'." };
+    const head = opts.start ? resolveRev(repo, opts.start) : headCommit(repo);
+    if (!head) return { error: `Not a valid object name: '${opts.start || "HEAD"}'.` };
     repo.branches[name] = head;
     repo.branchColors[name] =
         COLORS[Object.keys(repo.branches).length % COLORS.length];
@@ -353,60 +376,170 @@ export const gitBranch = (repo, name, opts = {}) => {
 };
 
 export const gitCheckout = (fsRoot, repo, target, opts = {}) => {
+    // No commits yet: `checkout -b <name>` just renames the unborn branch HEAD points at.
+    if (opts.newBranch && !opts.start && !headCommit(repo) && repo.HEAD.type === "branch") {
+        if (repo.branches[target]) return { error: `fatal: a branch named '${target}' already exists` };
+        if (repo.HEAD.ref === target) return { error: `fatal: a branch named '${target}' already exists` };
+        repo.HEAD = { type: "branch", ref: target };
+        repo.branchColors = repo.branchColors || {};
+        if (!repo.branchColors[target])
+            repo.branchColors[target] = COLORS[Object.keys(repo.branchColors).length % COLORS.length];
+        return { ok: true, switched: target };
+    }
+    const isBranch = opts.newBranch || repo.branches[target] !== undefined;
+    const hash = opts.newBranch
+        ? (opts.start ? resolveRev(repo, opts.start) : headCommit(repo))
+        : isBranch
+            ? repo.branches[target]
+            : resolveRev(repo, target);
+    if (opts.newBranch && repo.branches[target]) return { error: `branch '${target}' already exists.` };
+    if (!hash) {
+        if (opts.newBranch) return { error: `Not a valid object name: '${opts.start || "HEAD"}'.` };
+        return { error: `pathspec '${target}' did not match any file(s) known to git` };
+    }
+    const plan = planSwitch(fsRoot, repo, repo.commits[hash]?.files || {}, "checkout");
+    if (plan.error) return plan;
     if (opts.newBranch) {
-        const r = gitBranch(repo, target);
+        const r = gitBranch(repo, target, { start: hash });
         if (r.error) return r;
     }
     const oldHead = headCommit(repo);
-    if (repo.branches[target] !== undefined) {
-        repo.HEAD = { type: "branch", ref: target };
-        applyCommitToFs(fsRoot, repo, repo.branches[target]);
-        reflog(repo, "checkout", oldHead, repo.branches[target], `moving to ${target}`);
-        return { ok: true, switched: target };
-    }
-    if (repo.tags?.[target]) {
-        repo.HEAD = { type: "detached", ref: repo.tags[target] };
-        applyCommitToFs(fsRoot, repo, repo.tags[target]);
-        reflog(repo, "checkout", oldHead, repo.tags[target], `moving to tag ${target}`);
-        return { ok: true, detached: target };
-    }
-    if (repo.commits[target]) {
-        repo.HEAD = { type: "detached", ref: target };
-        applyCommitToFs(fsRoot, repo, target);
-        reflog(repo, "checkout", oldHead, target, `moving to ${target}`);
-        return { ok: true, detached: target };
-    }
-    return { error: `pathspec '${target}' did not match any file(s) known to git` };
+    repo.HEAD = isBranch ? { type: "branch", ref: target } : { type: "detached", ref: hash };
+    finishSwitch(fsRoot, repo, hash, plan);
+    reflog(repo, "checkout", oldHead, hash, `moving to ${target}`);
+    return isBranch ? { ok: true, switched: target } : { ok: true, detached: target, hash };
 };
 
+// --- working-tree helpers (paths are repo-relative) ---
+const writeRel = (dirNode, rel, content) => {
+    const parts = rel.split("/");
+    let cur = dirNode;
+    for (let i = 0; i < parts.length - 1; i++) {
+        cur.children = cur.children || {};
+        if (!cur.children[parts[i]] || cur.children[parts[i]].type !== "dir")
+            cur.children[parts[i]] = { type: "dir", name: parts[i], children: {} };
+        cur = cur.children[parts[i]];
+    }
+    cur.children = cur.children || {};
+    cur.children[parts[parts.length - 1]] = {
+        type: "file",
+        name: parts[parts.length - 1],
+        content,
+    };
+};
+
+// Delete a file and prune any directories that become empty because of it.
+const removeRel = (dirNode, rel) => {
+    const parts = rel.split("/");
+    const chain = [dirNode];
+    for (let i = 0; i < parts.length - 1; i++) {
+        const next = chain[chain.length - 1]?.children?.[parts[i]];
+        if (!next || next.type !== "dir") return;
+        chain.push(next);
+    }
+    const parent = chain[chain.length - 1];
+    if (parent.children?.[parts[parts.length - 1]]?.type !== "file") return;
+    delete parent.children[parts[parts.length - 1]];
+    for (let i = chain.length - 1; i > 0; i--) {
+        if (Object.keys(chain[i].children || {}).length > 0) break;
+        delete chain[i - 1].children[parts[i - 1]];
+    }
+};
+
+// Make the working tree match `hash`: files git knows about (tracked or
+// staged) that the target lacks are removed, target files are written.
+// Untracked files are left alone, like real git.
 const applyCommitToFs = (fsRoot, repo, hash) => {
     const commit = repo.commits[hash];
     const files = commit ? commit.files : {};
     const dirNode = getNode(fsRoot, repo.path);
     if (!dirNode) return;
-    dirNode.children = {};
-    for (const [rel, content] of Object.entries(files)) {
-        const parts = rel.split("/");
-        let cur = dirNode;
-        for (let i = 0; i < parts.length - 1; i++) {
-            cur.children = cur.children || {};
-            if (!cur.children[parts[i]])
-                cur.children[parts[i]] = {
-                    type: "dir",
-                    name: parts[i],
-                    children: {},
-                };
-            cur = cur.children[parts[i]];
-        }
-        cur.children = cur.children || {};
-        cur.children[parts[parts.length - 1]] = {
-            type: "file",
-            name: parts[parts.length - 1],
-            content,
-        };
+    const known = new Set([
+        ...Object.keys(repo.tracked || {}),
+        ...Object.keys(repo.staged || {}),
+    ]);
+    for (const rel of known) {
+        if (!(rel in files)) removeRel(dirNode, rel);
     }
+    for (const [rel, content] of Object.entries(files)) writeRel(dirNode, rel, content);
     repo.tracked = { ...files };
     repo.staged = {};
+};
+
+// Before moving HEAD to a snapshot with `newFiles`, work out which local
+// (uncommitted / untracked) changes can be carried over. Refuses, like git,
+// when the switch would overwrite a local change.
+const planSwitch = (fsRoot, repo, newFiles, op) => {
+    const head = headCommit(repo);
+    const oldFiles = head ? repo.commits[head]?.files || {} : {};
+    const working = workingSnapshot(fsRoot, repo);
+    const index = indexedFiles(repo);
+    const staged = repo.staged || {};
+    const carry = {};
+    const conflicts = [];
+    const untrackedConflicts = [];
+    const paths = new Set([...Object.keys(oldFiles), ...Object.keys(working), ...Object.keys(staged)]);
+    for (const p of paths) {
+        const w = p in working ? working[p] : null;
+        const o = p in oldFiles ? oldFiles[p] : null;
+        const i = p in index ? index[p] : null;
+        if (w === o && i === o) continue;
+        const n = p in newFiles ? newFiles[p] : null;
+        if (n !== o && n !== w) (o === null && i === null && w !== null ? untrackedConflicts : conflicts).push(p);
+        else carry[p] = w;
+    }
+    if (untrackedConflicts.length)
+        return {
+            error: `error: The following untracked working tree files would be overwritten by ${op}:\n${untrackedConflicts
+                .map((p) => "  " + p)
+                .join("\n")}\nPlease move or remove them before you ${op}.`,
+        };
+    if (conflicts.length)
+        return {
+            error: `error: Your local changes to the following files would be overwritten by ${op}:\n${conflicts
+                .map((p) => "  " + p)
+                .join("\n")}\nPlease commit your changes or stash them first.`,
+        };
+    const keepStaged = {};
+    for (const [p, v] of Object.entries(staged)) {
+        if (v !== (p in newFiles ? newFiles[p] : null)) keepStaged[p] = v;
+    }
+    return { carry, staged: keepStaged };
+};
+
+const finishSwitch = (fsRoot, repo, hash, plan) => {
+    applyCommitToFs(fsRoot, repo, hash);
+    const dirNode = getNode(fsRoot, repo.path);
+    if (!dirNode) return;
+    for (const [rel, content] of Object.entries(plan.carry)) {
+        if (content === null) removeRel(dirNode, rel);
+        else writeRel(dirNode, rel, content);
+    }
+    repo.staged = { ...plan.staged };
+};
+
+// Move the current branch (or detached HEAD) to `hash`, carrying local changes.
+const moveHeadTo = (fsRoot, repo, hash, op) => {
+    const plan = planSwitch(fsRoot, repo, repo.commits[hash]?.files || {}, op);
+    if (plan.error) return plan;
+    if (repo.HEAD.type === "branch") repo.branches[repo.HEAD.ref] = hash;
+    else repo.HEAD = { type: "detached", ref: hash };
+    finishSwitch(fsRoot, repo, hash, plan);
+    return { ok: true };
+};
+
+// Apply the change a commit introduced (vs its first parent) onto `baseFiles`.
+const applyCommitDiff = (repo, baseFiles, commit, reverse = false) => {
+    const parentFiles = commit.parents[0] ? repo.commits[commit.parents[0]]?.files || {} : {};
+    const from = reverse ? commit.files : parentFiles;
+    const to = reverse ? parentFiles : commit.files;
+    const out = { ...baseFiles };
+    for (const p of new Set([...Object.keys(from), ...Object.keys(to)])) {
+        if (from[p] === to[p]) continue;
+        if (p in to) out[p] = to[p];
+        else delete out[p];
+    }
+    return out;
 };
 
 // Generic merge: bring `otherHash` into current HEAD's branch.
@@ -421,21 +554,29 @@ const mergeCommitIntoHead = (fsRoot, repo, otherHash, label) => {
         return { ok: true, alreadyUpToDate: true, message: "Already up to date." };
     }
     if (lca === cur) {
-        if (repo.HEAD.type === "branch") repo.branches[repo.HEAD.ref] = otherHash;
-        else repo.HEAD = { type: "detached", ref: otherHash };
-        applyCommitToFs(fsRoot, repo, otherHash);
+        const moved = moveHeadTo(fsRoot, repo, otherHash, "merge");
+        if (moved.error) return moved;
         reflog(repo, "merge", cur, otherHash, `${label || otherHash} (fast-forward)`);
         return { ok: true, ff: true, hash: otherHash };
     }
     // True merge — produce a merge commit with two parents.
+    // (No conflict support: when both sides changed a file, theirs wins.)
     const baseFiles = repo.commits[lca]?.files || {};
     const curFiles = repo.commits[cur].files;
     const tgtFiles = repo.commits[otherHash].files;
     const merged = { ...curFiles };
     for (const [p, c] of Object.entries(tgtFiles)) {
-        if (!(p in merged)) merged[p] = c;
-        else if (merged[p] !== c && baseFiles[p] !== c) merged[p] = c;
+        if (!(p in merged)) {
+            // Added on their side — unless we deleted an unchanged base file.
+            if (!(p in baseFiles) || baseFiles[p] !== c) merged[p] = c;
+        } else if (merged[p] !== c && baseFiles[p] !== c) merged[p] = c;
     }
+    // Deleted on their side and untouched on ours → delete.
+    for (const p of Object.keys(curFiles)) {
+        if (!(p in tgtFiles) && p in baseFiles && baseFiles[p] === curFiles[p]) delete merged[p];
+    }
+    const plan = planSwitch(fsRoot, repo, merged, "merge");
+    if (plan.error) return plan;
     const hash = shortHash();
     repo.commits[hash] = {
         hash,
@@ -448,7 +589,7 @@ const mergeCommitIntoHead = (fsRoot, repo, otherHash, label) => {
     };
     if (repo.HEAD.type === "branch") repo.branches[repo.HEAD.ref] = hash;
     else repo.HEAD = { type: "detached", ref: hash };
-    applyCommitToFs(fsRoot, repo, hash);
+    finishSwitch(fsRoot, repo, hash, plan);
     reflog(repo, "merge", cur, hash, label || otherHash);
     return { ok: true, hash };
 };
@@ -465,17 +606,18 @@ export const gitMerge = (fsRoot, repo, ref) => {
 };
 
 export const gitRebase = (fsRoot, repo, ontoBranch) => {
-    if (!repo.branches[ontoBranch])
-        return { error: `invalid upstream '${ontoBranch}'` };
-    const onto = repo.branches[ontoBranch];
+    const onto = resolveRev(repo, ontoBranch);
+    if (!onto) return { error: `invalid upstream '${ontoBranch}'` };
     const curName = currentBranch(repo);
     if (!curName) return { error: "rebase requires a branch checkout" };
     const cur = repo.branches[curName];
+    if (!cur) return { error: "rebase requires at least one commit" };
     const lca = lowestCommonAncestor(repo, cur, onto);
     if (!lca) return { error: "no common ancestor" };
+    if (lca === onto) return { ok: true, upToDate: true, message: `Current branch ${curName} is up to date.` };
     if (lca === cur) {
-        repo.branches[curName] = onto;
-        applyCommitToFs(fsRoot, repo, onto);
+        const moved = moveHeadTo(fsRoot, repo, onto, "rebase");
+        if (moved.error) return moved;
         reflog(repo, "rebase", cur, onto, `onto ${ontoBranch}`);
         return { ok: true, ff: true };
     }
@@ -488,15 +630,25 @@ export const gitRebase = (fsRoot, repo, ontoBranch) => {
         linear.push(c);
     };
     walk(cur);
+    // Replay each commit's *change* on top of onto (not its full snapshot,
+    // which would silently drop everything onto added).
+    const replayed = [];
+    let files = repo.commits[onto].files;
+    for (const c of linear) {
+        files = applyCommitDiff(repo, files, c);
+        replayed.push({ c, files });
+    }
+    const plan = planSwitch(fsRoot, repo, files, "rebase");
+    if (plan.error) return plan;
     let parent = onto;
     let lastHash = onto;
-    for (const c of linear) {
+    for (const { c, files: snap } of replayed) {
         const h = shortHash();
         const newCommit = {
             hash: h,
             parents: [parent],
             message: c.message,
-            files: { ...c.files },
+            files: snap,
             author: c.author,
             date: new Date().toISOString(),
             branch: curName,
@@ -506,7 +658,7 @@ export const gitRebase = (fsRoot, repo, ontoBranch) => {
         lastHash = h;
     }
     repo.branches[curName] = lastHash;
-    applyCommitToFs(fsRoot, repo, lastHash);
+    finishSwitch(fsRoot, repo, lastHash, plan);
     reflog(repo, "rebase", cur, lastHash, `onto ${ontoBranch}, ${linear.length} commits`);
     return { ok: true, onto: ontoBranch, count: linear.length };
 };
@@ -523,15 +675,16 @@ const resolveRev = (repo, rev) => {
         if (repo.remote?.branches?.[b]) return repo.remote.branches[b];
     }
     if (repo.commits[rev]) return rev;
-    const m = rev.match(/^HEAD(?:~(\d+))?$/);
+    // <rev>~N, <rev>~, <rev>^ (first-parent ancestry)
+    const m = rev.match(/^(.+?)(?:~(\d*)|\^)$/);
     if (m) {
-        let n = parseInt(m[1] || "0", 10);
-        let h = headCommit(repo);
+        let n = m[2] ? parseInt(m[2], 10) : 1;
+        let h = resolveRev(repo, m[1]);
         while (n > 0 && h) {
             h = repo.commits[h]?.parents?.[0];
             n--;
         }
-        return h;
+        return h || null;
     }
     // partial hash prefix
     const matches = Object.keys(repo.commits).filter((h) => h.startsWith(rev));
@@ -543,32 +696,37 @@ export const gitReset = (fsRoot, repo, target, mode = "--mixed") => {
     const hash = resolveRev(repo, target);
     if (!hash) return { error: `unknown revision '${target}'` };
     const oldHead = headCommit(repo);
+    const oldIndex = indexedFiles(repo);
     if (repo.HEAD.type === "branch") repo.branches[repo.HEAD.ref] = hash;
     else repo.HEAD = { type: "detached", ref: hash };
     if (mode === "--hard") {
         applyCommitToFs(fsRoot, repo, hash);
     } else {
-        repo.tracked = { ...(repo.commits[hash]?.files || {}) };
-        if (mode === "--mixed") repo.staged = {};
+        const newFiles = repo.commits[hash]?.files || {};
+        repo.tracked = { ...newFiles };
+        repo.staged = {};
+        if (mode === "--soft") {
+            // Index is untouched: whatever differs from the new HEAD is now staged.
+            for (const p of new Set([...Object.keys(oldIndex), ...Object.keys(newFiles)])) {
+                const v = p in oldIndex ? oldIndex[p] : null;
+                if (v !== (p in newFiles ? newFiles[p] : null)) repo.staged[p] = v;
+            }
+        }
     }
     reflog(repo, "reset", oldHead, hash, `${mode} ${target}`);
     return { ok: true, mode, hash };
 };
 
-export const gitRevert = (repo, target) => {
+export const gitRevert = (fsRoot, repo, target) => {
     const head = headCommit(repo);
     const targetHash = resolveRev(repo, target);
     if (!targetHash) return { error: `bad revision '${target}'` };
     if (!head) return { error: "nothing to revert" };
     const targetCommit = repo.commits[targetHash];
-    const parentFiles = targetCommit.parents[0]
-        ? repo.commits[targetCommit.parents[0]].files
-        : {};
-    const newFiles = { ...repo.commits[head].files };
-    for (const p of Object.keys(targetCommit.files)) {
-        if (parentFiles[p] !== undefined) newFiles[p] = parentFiles[p];
-        else delete newFiles[p];
-    }
+    // Undo only what the target commit changed (vs its first parent).
+    const newFiles = applyCommitDiff(repo, repo.commits[head].files, targetCommit, true);
+    const plan = planSwitch(fsRoot, repo, newFiles, "revert");
+    if (plan.error) return plan;
     const hash = shortHash();
     repo.commits[hash] = {
         hash,
@@ -581,6 +739,7 @@ export const gitRevert = (repo, target) => {
     };
     if (repo.HEAD.type === "branch") repo.branches[repo.HEAD.ref] = hash;
     else repo.HEAD = { type: "detached", ref: hash };
+    finishSwitch(fsRoot, repo, hash, plan);
     reflog(repo, "revert", head, hash, targetHash);
     return { ok: true, hash };
 };
@@ -591,7 +750,10 @@ export const gitCherryPick = (fsRoot, repo, target) => {
     if (!targetHash) return { error: `bad revision '${target}'` };
     if (!head) return { error: "no HEAD to cherry-pick onto" };
     const tc = repo.commits[targetHash];
-    const newFiles = { ...repo.commits[head].files, ...tc.files };
+    // Apply only the change the picked commit introduced, not its whole snapshot.
+    const newFiles = applyCommitDiff(repo, repo.commits[head].files, tc);
+    const plan = planSwitch(fsRoot, repo, newFiles, "cherry-pick");
+    if (plan.error) return plan;
     const hash = shortHash();
     repo.commits[hash] = {
         hash,
@@ -604,7 +766,7 @@ export const gitCherryPick = (fsRoot, repo, target) => {
     };
     if (repo.HEAD.type === "branch") repo.branches[repo.HEAD.ref] = hash;
     else repo.HEAD = { type: "detached", ref: hash };
-    applyCommitToFs(fsRoot, repo, hash);
+    finishSwitch(fsRoot, repo, hash, plan);
     reflog(repo, "cherry-pick", head, hash, targetHash);
     return { ok: true, hash, picked: targetHash };
 };
@@ -632,6 +794,8 @@ export const gitTag = (repo, name, target, opts = {}) => {
 
 // Stash
 export const gitStash = (fsRoot, repo, message = "WIP") => {
+    const head = headCommit(repo);
+    if (!head) return { error: "You do not have the initial commit yet" };
     const working = workingSnapshot(fsRoot, repo);
     const tracked = repo.tracked || {};
     // Only stash if something changed
@@ -640,46 +804,67 @@ export const gitStash = (fsRoot, repo, message = "WIP") => {
         Object.entries(working).some(([k, v]) => tracked[k] !== v) ||
         Object.keys(tracked).some((k) => !(k in working));
     if (!dirty) return { error: "No local changes to save" };
-    const id = "stash@{" + repo.stashes.length + "}";
+    // Newest stash is always stash@{0}; older entries shift down.
+    const id = "stash@{0}";
     repo.stashes.unshift({
         id,
         message,
         branch: currentBranch(repo),
         files: { ...working },
         staged: { ...repo.staged },
-        parent: headCommit(repo),
+        parent: head,
         date: new Date().toISOString(),
     });
-    // Restore to HEAD
-    const head = headCommit(repo);
-    if (head) applyCommitToFs(fsRoot, repo, head);
+    // Restore to HEAD. Untracked files are stashed too (like `git stash -u`),
+    // so remove them from the working tree as well.
+    applyCommitToFs(fsRoot, repo, head);
+    const dirNode = getNode(fsRoot, repo.path);
+    for (const rel of Object.keys(working)) {
+        if (!(rel in repo.tracked)) removeRel(dirNode, rel);
+    }
     return { ok: true, id };
 };
 
 export const gitStashPop = (fsRoot, repo) => {
     if (!repo.stashes.length) return { error: "No stash entries found" };
-    const s = repo.stashes.shift();
-    // Apply files to working tree
+    const s = repo.stashes[0];
     const dirNode = getNode(fsRoot, repo.path);
     if (!dirNode) return { error: "repo path missing" };
-    dirNode.children = {};
-    for (const [rel, content] of Object.entries(s.files)) {
-        const parts = rel.split("/");
-        let cur = dirNode;
-        for (let i = 0; i < parts.length - 1; i++) {
-            cur.children = cur.children || {};
-            if (!cur.children[parts[i]])
-                cur.children[parts[i]] = { type: "dir", name: parts[i], children: {} };
-            cur = cur.children[parts[i]];
-        }
-        cur.children = cur.children || {};
-        cur.children[parts[parts.length - 1]] = {
-            type: "file",
-            name: parts[parts.length - 1],
-            content,
+    // Re-apply the stashed changes (relative to the commit they were made on)
+    // on top of the current working tree.
+    const base = repo.commits[s.parent]?.files || {};
+    const working = workingSnapshot(fsRoot, repo);
+    const head = headCommit(repo);
+    const headFiles = head ? repo.commits[head]?.files || {} : {};
+    const changed = [...new Set([...Object.keys(base), ...Object.keys(s.files)])].filter(
+        (p) => base[p] !== s.files[p],
+    );
+    const conflicts = changed.filter((p) => working[p] !== headFiles[p] && working[p] !== s.files[p]);
+    // A later commit changed the same file differently: git would need a
+    // content merge here, so refuse and keep the stash.
+    const headConflicts = changed.filter(
+        (p) => !conflicts.includes(p) && headFiles[p] !== base[p] && headFiles[p] !== s.files[p],
+    );
+    if (headConflicts.length && !conflicts.length)
+        return {
+            error: `CONFLICT (content): the stash and a later commit both changed:\n${headConflicts
+                .map((p) => "  " + p)
+                .join("\n")}\nerror: could not apply ${s.id} — commit or undo the conflicting change first.\nThe stash entry is kept in case you need it again.`,
         };
+    if (conflicts.length)
+        return {
+            error: `error: Your local changes to the following files would be overwritten by stash pop:\n${conflicts
+                .map((p) => "  " + p)
+                .join("\n")}\nThe stash entry is kept in case you need it again.`,
+        };
+    repo.stashes.shift();
+    for (const p of changed) {
+        if (p in s.files) writeRel(dirNode, p, s.files[p]);
+        else removeRel(dirNode, p);
     }
-    repo.staged = { ...s.staged };
+    for (const [p, v] of Object.entries(s.staged || {})) {
+        if (v !== (p in repo.tracked ? repo.tracked[p] : null)) repo.staged[p] = v;
+    }
     return { ok: true, id: s.id };
 };
 
@@ -725,59 +910,46 @@ export const gitRestore = (fsRoot, repo, path, opts = {}) => {
 };
 
 // git rm
-export const gitRm = (fsRoot, repo, path) => {
+export const gitRm = (fsRoot, repo, path, opts = {}) => {
     const tracked = repo.tracked || {};
-    const matches = Object.keys(tracked).filter(
-        (p) => p === path || p.startsWith(path + "/"),
+    // Anything in the index: committed files and newly staged ones.
+    const matches = Object.keys(indexedFiles(repo)).filter(
+        (p) => p === path || path === "." || p.startsWith(path + "/"),
     );
     if (matches.length === 0)
-        return { error: `pathspec '${path}' did not match any tracked files` };
-    // Remove from VFS
+        return { error: `fatal: pathspec '${path}' did not match any files` };
+    if (matches.length > 1 && !opts.recursive && !matches.includes(path))
+        return { error: `not removing '${path}' recursively without -r` };
+    // Remove from VFS (unless --cached: only untrack it)
     const dirNode = getNode(fsRoot, repo.path);
     for (const rel of matches) {
-        const parts = rel.split("/");
-        let cur = dirNode;
-        for (let i = 0; i < parts.length - 1; i++) {
-            cur = cur?.children?.[parts[i]];
-            if (!cur) break;
-        }
-        if (cur?.children) delete cur.children[parts[parts.length - 1]];
-        repo.staged[rel] = null;
+        if (!opts.cached && dirNode) removeRel(dirNode, rel);
+        if (rel in tracked) repo.staged[rel] = null;
+        else delete repo.staged[rel]; // never committed: just drop it from the index
     }
     return { ok: true, removed: matches.length };
 };
 
 // git mv (also stages)
 export const gitMv = (fsRoot, repo, src, dst) => {
-    const tracked = repo.tracked || {};
-    if (!(src in tracked)) return { error: `'${src}' is not tracked` };
-    const content = tracked[src];
-    repo.staged[src] = null;
-    repo.staged[dst] = content;
-    // Update VFS
+    const index = indexedFiles(repo);
+    if (!(src in index)) return { error: `fatal: not under version control, source=${src}` };
     const dirNode = getNode(fsRoot, repo.path);
+    const working = workingSnapshot(fsRoot, repo);
+    if (!(src in working)) return { error: `fatal: bad source, source=${src}` };
+    // Moving into an existing directory keeps the file name
+    const dstNode = getNode(fsRoot, absFromRel(repo, dst));
+    if (dstNode?.type === "dir") dst = (dst === "." ? "" : dst + "/") + src.split("/").pop();
+    else if (dstNode) return { error: `fatal: destination exists, source=${src}, destination=${dst}` };
+    if (src in (repo.tracked || {})) repo.staged[src] = null;
+    else delete repo.staged[src];
+    repo.staged[dst] = index[src];
+    // Update VFS: the working copy (with any unstaged edits) moves along
     if (dirNode) {
-        // delete src
-        const sp = src.split("/");
-        let cur = dirNode;
-        for (let i = 0; i < sp.length - 1; i++) cur = cur?.children?.[sp[i]];
-        if (cur?.children) delete cur.children[sp[sp.length - 1]];
-        // create dst
-        const dp = dst.split("/");
-        cur = dirNode;
-        for (let i = 0; i < dp.length - 1; i++) {
-            cur.children = cur.children || {};
-            if (!cur.children[dp[i]])
-                cur.children[dp[i]] = { type: "dir", name: dp[i], children: {} };
-            cur = cur.children[dp[i]];
-        }
-        cur.children[dp[dp.length - 1]] = {
-            type: "file",
-            name: dp[dp.length - 1],
-            content,
-        };
+        removeRel(dirNode, src);
+        writeRel(dirNode, dst, working[src]);
     }
-    return { ok: true };
+    return { ok: true, dst };
 };
 
 // Reflog
@@ -786,7 +958,7 @@ export const gitReflog = (repo) => (repo.reflog || []).slice();
 // Show
 export const gitShow = (repo, target) => {
     const hash = resolveRev(repo, target || "HEAD");
-    if (!hash) return { error: `bad revision '${target}'` };
+    if (!hash) return { error: `bad revision '${target || "HEAD"}'` };
     const c = repo.commits[hash];
     if (!c) return { error: `commit '${target}' not found` };
     const parent = c.parents[0] ? repo.commits[c.parents[0]] : null;
@@ -809,10 +981,24 @@ export const computeDiffPairs = (fsRoot, repo, opts = {}) => {
     const tracked = repo.tracked || {};
     const staged = repo.staged || {};
     const index = indexedFiles(repo);
+    // opts.paths = [relPath] limits the result to those files / directories
+    if (opts.paths?.length) {
+        const { paths, ...rest } = opts;
+        return computeDiffPairs(fsRoot, repo, rest).filter((d) =>
+            paths.some((p) => p === "." || d.path === p || d.path.startsWith(p + "/")),
+        );
+    }
     if (opts.between) {
-        const [a, b] = opts.between.map((r) => resolveRev(repo, r));
+        // between = [a, null] compares commit a with the working tree
+        const [a, b] = opts.between.map((r) => (r === null ? null : resolveRev(repo, r)));
         const A = repo.commits[a]?.files || {};
-        const B = repo.commits[b]?.files || {};
+        // Working-tree side: only paths git knows about (in the index); untracked files never show.
+        let B;
+        if (opts.between[1] === null) {
+            const w = workingSnapshot(fsRoot, repo);
+            B = {};
+            for (const p of Object.keys(w)) if (p in index) B[p] = w[p];
+        } else B = repo.commits[b]?.files || {};
         const all = new Set([...Object.keys(A), ...Object.keys(B)]);
         return [...all]
             .filter((p) => A[p] !== B[p])
@@ -830,10 +1016,10 @@ export const computeDiffPairs = (fsRoot, repo, opts = {}) => {
         return out;
     }
     // working vs index
+    // Untracked files are not part of `git diff`.
     const working = workingSnapshot(fsRoot, repo);
-    const all = new Set([...Object.keys(index), ...Object.keys(working)]);
     const out = [];
-    for (const p of all) {
+    for (const p of Object.keys(index)) {
         const before = index[p];
         const after = working[p];
         if (before === after) continue;
@@ -843,11 +1029,23 @@ export const computeDiffPairs = (fsRoot, repo, opts = {}) => {
 };
 
 // Remote (simulated)
-export const gitPush = (repo, branch) => {
+export const gitPush = (repo, branch, opts = {}) => {
     const b = branch || currentBranch(repo);
-    if (!b) return { error: "cannot push detached HEAD without target" };
-    if (!repo.branches[b]) return { error: `branch '${b}' not found` };
+    if (!b) return { error: "fatal: You are not currently on a branch." };
+    if (!repo.branches[b]) return { error: `error: src refspec ${b} does not match any` };
     const head = repo.branches[b];
+    const remoteHead = repo.remote.branches[b];
+    let forced = false;
+    if (remoteHead && remoteHead !== head && !ancestors(repo, head).has(remoteHead)) {
+        if (!opts.force)
+            return {
+                error: "rejected",
+                rejected: true,
+                branch: b,
+                reason: repo.commits[remoteHead] ? "non-fast-forward" : "fetch first",
+            };
+        forced = true;
+    }
     const visit = (h) => {
         if (!h || repo.remote.commits[h]) return;
         const c = repo.commits[h];
@@ -860,7 +1058,7 @@ export const gitPush = (repo, branch) => {
     // Update remote-tracking ref so the visualizer & ahead/behind logic know.
     repo.remoteRefs = repo.remoteRefs || {};
     repo.remoteRefs["origin/" + b] = head;
-    return { ok: true, branch: b, hash: head };
+    return { ok: true, branch: b, hash: head, forced };
 };
 
 export const gitFetch = (repo) => {
@@ -989,8 +1187,15 @@ export const gitPull = (fsRoot, repo, branch) => {
     repo.remoteRefs["origin/" + b] = remoteHead;
 
     if (!repo.branches[b]) {
-        repo.branches[b] = remoteHead;
-        if (currentBranch(repo) === b) applyCommitToFs(fsRoot, repo, remoteHead);
+        if (currentBranch(repo) === b) {
+            // Unborn current branch: protect local / untracked files like checkout does.
+            const plan = planSwitch(fsRoot, repo, repo.commits[remoteHead]?.files || {}, "merge");
+            if (plan.error) return plan;
+            repo.branches[b] = remoteHead;
+            finishSwitch(fsRoot, repo, remoteHead, plan);
+        } else {
+            repo.branches[b] = remoteHead;
+        }
         reflog(repo, "pull", null, remoteHead, `created ${b} from origin`);
         return { ok: true, ff: true, hash: remoteHead };
     }
@@ -1005,9 +1210,13 @@ export const gitPull = (fsRoot, repo, branch) => {
     return { ok: true, ff: !!r.ff, hash: r.hash };
 };
 
-export const gitClone = (fsRoot, url) => {
-    const name = (url.split("/").pop() || "repo").replace(/\.git$/, "");
-    const repo = newRepo("/home/student/" + name);
+export const gitClone = (fsRoot, url, parentDir = "/home/student") => {
+    const name = (url.replace(/\/+$/, "").split("/").pop() || "repo").replace(/\.git$/, "") || "repo";
+    const path = (parentDir === "/" ? "" : parentDir) + "/" + name;
+    if (getNode(fsRoot, path))
+        return { error: `fatal: destination path '${name}' already exists and is not an empty directory.` };
+    if (!ensureDir(fsRoot, path)) return { error: `fatal: could not create work tree dir '${name}'` };
+    const repo = newRepo(path);
     const hash = shortHash();
     const files = {
         "README.md": `# ${name}\n\nA cloned repository (simulated).\n`,
@@ -1026,6 +1235,7 @@ export const gitClone = (fsRoot, url) => {
     repo.tracked = { ...files };
     repo.remote.branches.main = hash;
     repo.remote.commits[hash] = { ...repo.commits[hash] };
+    repo.remoteRefs["origin/main"] = hash;
     applyCommitToFs(fsRoot, repo, hash);
     reflog(repo, "clone", null, hash, url);
     return { ok: true, repo, name };
@@ -1107,7 +1317,6 @@ const topoOrder = (repo) => {
         }
     }
     // Kahn's algorithm, but among ready nodes pick the one with newest date.
-    const ready = rootArr.filter((h) => visited.has(h));
     const childCount = {};
     for (const h of visited) {
         childCount[h] = 0;
@@ -1115,6 +1324,9 @@ const topoOrder = (repo) => {
     for (const h of visited) {
         for (const p of repo.commits[h].parents) childCount[p] = (childCount[p] || 0) + 1;
     }
+    // A tip that is an ancestor of another tip (e.g. main behind feature)
+    // must wait for its children, or it would be drawn above them.
+    const ready = rootArr.filter((h) => visited.has(h) && childCount[h] === 0);
     const order = [];
     const inReady = new Set(ready);
     while (ready.length) {
@@ -1130,8 +1342,10 @@ const topoOrder = (repo) => {
             }
         }
     }
-    // Fallback: include any orphan commits (shouldn't happen) sorted by date desc
-    for (const h of Object.keys(repo.commits)) {
+    // Safety net for reachable commits Kahn's walk missed. Commits no ref
+    // reaches (abandoned by rebase or reset --hard) are left out, as in
+    // `git log --all`.
+    for (const h of visited) {
         if (!order.includes(h)) order.push(h);
     }
     return order;

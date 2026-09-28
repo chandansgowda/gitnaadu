@@ -16,7 +16,16 @@ const all = (...fns) => (ctx) => fns.every((fn) => fn(ctx));
 const repoAt = (path) => ({ state }) => Boolean(state.repos?.[path]);
 const cwdIs = (path) => ({ state }) => state.cwd === path;
 const lastKindIs = (kind) => ({ lastHighlight }) => lastHighlight?.kind === kind;
-const cmdMatches = (re) => ({ lastCommand }) => Boolean(lastCommand && re.test(lastCommand));
+// With `a && b` chaining only the last command's highlight is reported, so a
+// "stage" step also accepts the highlight of the command that follows it.
+const lastKindIn = (...kinds) => ({ lastHighlight }) => kinds.includes(lastHighlight?.kind);
+// Checked against each command of an `a && b` chain as well as the whole line.
+const cmdMatches = (re) => ({ lastCommand }) =>
+    Boolean(
+        lastCommand &&
+            (re.test(lastCommand) ||
+                lastCommand.split("&&").some((part) => re.test(part))),
+    );
 const branchExists = (name) => ({ state }) => {
     const repo = findRepo(state.repos || {}, state.cwd);
     return Boolean(repo?.branches?.[name]);
@@ -271,7 +280,7 @@ export const CHALLENGES = [
             {
                 text: "Stage every file in the directory.",
                 hint: "git add .",
-                check: lastKindIs("git-add"),
+                check: lastKindIn("git-add", "git-commit"),
             },
             {
                 text: "Commit the staged files with a message.",
@@ -618,7 +627,7 @@ export const CHALLENGES = [
         id: "amend-it",
         title: "Amend that typo",
         difficulty: "intermediate",
-        intro: "Made a typo in your commit message? `git commit --amend` rewrites the last commit without making a new one.",
+        intro: "Made a typo in your commit message? `git commit --amend` replaces the last commit with a fixed-up copy (new hash, same parent).",
         steps: [
             {
                 text: "Make a commit with a deliberately bad message.",
@@ -820,7 +829,7 @@ export const CHALLENGES = [
         steps: [
             {
                 text: "Have at least 2 commits.",
-                hint: 'git commit -m "a" && git commit -m "b"',
+                hint: 'touch a.txt && git add . && git commit -m "a" && touch b.txt && git add . && git commit -m "b"',
                 check: minCommits(2),
             },
             {

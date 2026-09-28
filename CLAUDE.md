@@ -67,6 +67,9 @@ HEAD can be **detached** — engine functions and any new code reading HEAD must
 
 ### Layout & challenges
 
+Below Tailwind's `lg` breakpoint (`useIsMobile` in `src/hooks/useViewport.js`) `App.js` renders a separate phone layout: compact `Header` (`isMobile`), one full-screen view at a time chosen by `MobileNav` (bottom tabs; `tab` gains a `"terminal"` value), and a docked terminal input with quick-command chips. On phones a `highlight` badges the target tab instead of switching away from the terminal. `useVisualViewport` sets `--app-height` so the layout sits above the on-screen keyboard. The workspace panels are defined once in `panels` and shared by both layouts.
+
+
 `App.js` is a two-pane shell: `Header` on top, left = `Terminal`, right = tabbed workspace (Git Tree / Files / Editor / Diff / Remote) whose active tab is `tab` state auto-driven by `highlight`, then `StatusBar` and overlay dialogs (`WelcomeOverlay`, `ChallengePanel`).
 
 Guided lessons live in `src/lib/challenges.js`; `useChallenges` watches the latest `lastCommand` / `highlight` to auto-advance steps, and progress is stored in `state.challenges`.
@@ -74,6 +77,6 @@ Guided lessons live in `src/lib/challenges.js`; `useChallenges` watches the late
 ## Conventions
 
 - `@/` import alias maps to `src/` (configured in both `webpack.config.js` and `jsconfig.json`), though most existing files use relative imports.
-- Images are bundled via webpack asset modules (`type: "asset"` for `png|jpe?g|gif|svg|webp`) — `import` them as modules. `public/` is **not** copied to the build except the HTML template and `favicon.svg` (wired through `HtmlWebpackPlugin`), so don't reference files placed loose in `public/`.
+- Images are bundled via webpack asset modules (`type: "asset"` for `png|jpe?g|gif|svg|webp`) — `import` them as modules. `public/` is **not** copied wholesale: only the HTML template + `favicon.svg` (via `HtmlWebpackPlugin`) and the files listed in the `CopyWebpackPlugin` patterns (OG image, web manifest, app icons). Add new root-served files to that list.
 - The brand accent is `yellow` = `#ffd700` (Tailwind theme token), used bare as `bg-yellow` / `text-yellow`. Surface shades are `surface-0..3`.
 - UI primitives in `src/components/ui/` are shadcn/ui-style; key panels carry `data-testid` attributes.

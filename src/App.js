@@ -22,13 +22,48 @@ import { ChallengePanel } from "./components/ChallengePanel";
 import { findRepo, currentBranch } from "./lib/gitEngine";
 import { Toaster } from "./components/ui/sonner";
 import { toast } from "sonner";
-import { AnimatePresence } from "framer-motion";
+import { AnimatePresence, motion } from "framer-motion";
+import { MobileNav } from "./components/MobileNav";
+import { useIsMobile, useVisualViewport } from "./hooks/useViewport";
+
+const TREE_KINDS = new Set([
+    "git-init",
+    "git-commit",
+    "git-amend",
+    "git-branch",
+    "git-checkout",
+    "git-merge",
+    "git-rebase",
+    "git-reset",
+    "git-revert",
+    "git-cherry-pick",
+    "git-tag",
+    "git-clone",
+]);
+
+// Which workspace view best shows the effect of a highlighted command.
+const tabForHighlight = (kind = "") => {
+    if (kind === "git-diff") return "diff";
+    if (kind === "git-push" || kind === "git-fetch") return "remote";
+    if (TREE_KINDS.has(kind)) return "git";
+    return null;
+};
+
+const TAB_LABELS = { git: "graph", diff: "diff", remote: "remote" };
+
+const TAB_TRIGGER_CLS =
+    "h-7 px-2.5 data-[state=active]:bg-yellow data-[state=active]:text-black data-[state=active]:shadow-none text-[11px] uppercase tracking-wider font-bold";
 
 export default function App() {
     const [state, setState, stateRef, resetState, hist] = useGitNaadu();
     const sound = useSound();
+    const isMobile = useIsMobile();
+    const keyboardOpen = useVisualViewport();
     const [highlight, setHighlight] = useState(null);
-    const [tab, setTab] = useState("git");
+    // On phones "terminal" is a view of its own; on desktop it's always
+    // visible and `tab` only drives the right-hand workspace.
+    const [tab, setTab] = useState(() => (isMobile ? "terminal" : "git"));
+    const [badges, setBadges] = useState({});
     const [welcomeOpen, setWelcomeOpen] = useState(false);
     const [editorPath, setEditorPath] = useState(null);
     const [selectedCommit, setSelectedCommit] = useState(null);
@@ -49,7 +84,7 @@ export default function App() {
             toast.success(`Step ${idx} done`, {
                 description: challenge.steps[idx - 1]?.text,
                 duration: 2200,
-                position: "bottom-right",
+                position: isMobile ? "top-center" : "bottom-right",
             });
         },
         onComplete: (challenge) => {
@@ -57,7 +92,7 @@ export default function App() {
             toast.success(`Challenge complete: ${challenge.title}`, {
                 description: challenge.outro,
                 duration: 4500,
-                position: "bottom-right",
+                position: isMobile ? "top-center" : "bottom-right",
             });
         },
     });
@@ -72,34 +107,26 @@ export default function App() {
     );
     const branch = repo ? currentBranch(repo) : null;
 
-    // Only mutate-the-tree commands should switch tab to "git".
+    // Only mutate-the-tree commands should switch tab to "git". On phones we
+    // don't yank the user out of the terminal — the target tab gets a badge
+    // and the explainer card offers a shortcut instead.
     useEffect(() => {
         if (!highlight) return;
-        const k = highlight.kind || "";
-        if (k === "git-diff") {
-            setTab("diff");
-            return;
+        const target = tabForHighlight(highlight.kind);
+        if (!target) return;
+        if (isMobile) {
+            if (tab !== target) setBadges((b) => ({ ...b, [target]: true }));
+        } else {
+            setTab(target);
         }
-        if (k === "git-push" || k === "git-fetch") {
-            setTab("remote");
-            return;
-        }
-        const showTreeKinds = new Set([
-            "git-init",
-            "git-commit",
-            "git-amend",
-            "git-branch",
-            "git-checkout",
-            "git-merge",
-            "git-rebase",
-            "git-reset",
-            "git-revert",
-            "git-cherry-pick",
-            "git-tag",
-            "git-clone",
-        ]);
-        if (showTreeKinds.has(k)) setTab("git");
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [highlight]);
+
+    // Terminal isn't a workspace tab on desktop; clear badges once seen.
+    useEffect(() => {
+        if (!isMobile && tab === "terminal") setTab("git");
+        setBadges((b) => (b[tab] ? { ...b, [tab]: false } : b));
+    }, [tab, isMobile]);
 
     const handleReset = useCallback(() => {
         resetState();
@@ -107,12 +134,13 @@ export default function App() {
         setHighlight(null);
         setEditorPath(null);
         setSelectedCommit(null);
-        setTab("git");
+        setBadges({});
+        setTab(isMobile ? "terminal" : "git");
         sound.play("toggle");
         toast.success("Playground reset", {
             description: "All repos, files and history cleared.",
         });
-    }, [resetState, sound]);
+    }, [resetState, sound, isMobile]);
 
     const openFile = useCallback(
         (path) => {
@@ -179,171 +207,104 @@ export default function App() {
         [sound],
     );
 
-    return (
-        <div className="h-screen w-screen flex flex-col bg-surface-0 text-white">
-            <Header
-                branch={branch}
+    const changeTab = (v) => {
+        setTab(v);
+        // On phones the explainer card would cover the view being opened.
+        if (isMobile) setHighlight(null);
+        sound.play("toggle");
+    };
+
+    // Workspace panels, shared by the desktop tabs and the phone views.
+    const panels = {
+        git: (
+            <>
+                <GitTree state={state} onSelectCommit={onSelectCommit} />
+                <AnimatePresence>
+                    {selectedCommit && (
+                        <CommitShow
+                            state={state}
+                            commitId={selectedCommit}
+                            onClose={() => {
+                                setSelectedCommit(null);
+                                sound.play("pop");
+                            }}
+                        />
+                    )}
+                </AnimatePresence>
+            </>
+        ),
+        files: (
+            <FileTree
+                state={state}
                 repoPath={repo?.path}
-                cwd={state.cwd}
-                onReset={handleReset}
-                onShowHelp={() => setWelcomeOpen(true)}
-                onUndo={onUndo}
-                onRedo={onRedo}
-                canUndo={hist.canUndo}
-                canRedo={hist.canRedo}
-                soundEnabled={sound.enabled}
-                onToggleSound={() => {
-                    sound.toggle();
-                    sound.play("toggle");
-                }}
-                onOpenChallenges={() => {
-                    setChallengesOpen(true);
-                    // If there's an active challenge, jump straight to it.
-                    setChallengeView(challenges.active ? "active" : "list");
-                    sound.play("toggle");
-                }}
-                challengesDone={Object.keys(challenges.completed || {}).length}
-                challengesTotal={challenges.all.length}
+                onOpenFile={openFile}
             />
+        ),
+        editor: (
+            <Editor
+                state={state}
+                setState={setState}
+                path={editorPath}
+                onSaved={() => sound.play("success")}
+                onClose={() => {
+                    setEditorPath(null);
+                    setTab("files");
+                }}
+            />
+        ),
+        diff: <DiffView state={state} />,
+        remote: <RemotePanel state={state} setState={setState} />,
+    };
 
-            <main className="flex-1 grid grid-cols-1 lg:grid-cols-2 min-h-0 relative">
-                {/* LEFT — Terminal */}
-                <div className="border-r border-surface-3 min-h-0 flex flex-col">
-                    <Terminal
-                        state={state}
-                        setState={setState}
-                        branch={branch}
-                        onHighlight={setHighlight}
-                        onSound={playForHighlight}
-                    />
-                </div>
+    const terminal = (
+        <Terminal
+            state={state}
+            setState={setState}
+            branch={branch}
+            onHighlight={setHighlight}
+            onSound={playForHighlight}
+            isMobile={isMobile}
+        />
+    );
 
-                {/* RIGHT — Visual workspace */}
-                <div className="min-h-0 flex flex-col relative">
-                    <Tabs
-                        value={tab}
-                        onValueChange={(v) => {
-                            setTab(v);
-                            sound.play("toggle");
-                        }}
-                        className="flex-1 flex flex-col min-h-0"
-                    >
-                        <div className="h-11 border-b border-surface-3 bg-surface-1/70 px-3 flex items-center justify-between flex-shrink-0 gap-2">
-                            <TabsList
-                                className="bg-surface-2 border border-surface-3 h-8 p-0.5"
-                                data-testid="right-panel-tabs"
-                            >
-                                <TabsTrigger
-                                    value="git"
-                                    className="h-7 px-2.5 data-[state=active]:bg-yellow data-[state=active]:text-black data-[state=active]:shadow-none text-[11px] uppercase tracking-wider font-bold"
-                                    data-testid="tab-git"
-                                >
-                                    Git Tree
-                                </TabsTrigger>
-                                <TabsTrigger
-                                    value="files"
-                                    className="h-7 px-2.5 data-[state=active]:bg-yellow data-[state=active]:text-black data-[state=active]:shadow-none text-[11px] uppercase tracking-wider font-bold"
-                                    data-testid="tab-files"
-                                >
-                                    Files
-                                </TabsTrigger>
-                                <TabsTrigger
-                                    value="editor"
-                                    className="h-7 px-2.5 data-[state=active]:bg-yellow data-[state=active]:text-black data-[state=active]:shadow-none text-[11px] uppercase tracking-wider font-bold"
-                                    data-testid="tab-editor"
-                                >
-                                    Editor
-                                </TabsTrigger>
-                                <TabsTrigger
-                                    value="diff"
-                                    className="h-7 px-2.5 data-[state=active]:bg-yellow data-[state=active]:text-black data-[state=active]:shadow-none text-[11px] uppercase tracking-wider font-bold"
-                                    data-testid="tab-diff"
-                                >
-                                    Diff
-                                </TabsTrigger>
-                                <TabsTrigger
-                                    value="remote"
-                                    className="h-7 px-2.5 data-[state=active]:bg-yellow data-[state=active]:text-black data-[state=active]:shadow-none text-[11px] uppercase tracking-wider font-bold"
-                                    data-testid="tab-remote"
-                                >
-                                    Remote
-                                </TabsTrigger>
-                            </TabsList>
-                        </div>
-                        <TabsContent
-                            value="git"
-                            className="flex-1 m-0 min-h-0 relative"
-                        >
-                            <GitTree
-                                state={state}
-                                onSelectCommit={onSelectCommit}
-                            />
-                            <AnimatePresence>
-                                {selectedCommit && (
-                                    <CommitShow
-                                        state={state}
-                                        commitId={selectedCommit}
-                                        onClose={() => {
-                                            setSelectedCommit(null);
-                                            sound.play("pop");
-                                        }}
-                                    />
-                                )}
-                            </AnimatePresence>
-                        </TabsContent>
-                        <TabsContent
-                            value="files"
-                            className="flex-1 m-0 min-h-0"
-                        >
-                            <FileTree
-                                state={state}
-                                repoPath={repo?.path}
-                                onOpenFile={openFile}
-                            />
-                        </TabsContent>
-                        <TabsContent
-                            value="editor"
-                            className="flex-1 m-0 min-h-0"
-                        >
-                            <Editor
-                                state={state}
-                                setState={setState}
-                                path={editorPath}
-                                onSaved={() => sound.play("success")}
-                                onClose={() => {
-                                    setEditorPath(null);
-                                    setTab("files");
-                                }}
-                            />
-                        </TabsContent>
-                        <TabsContent
-                            value="diff"
-                            className="flex-1 m-0 min-h-0"
-                        >
-                            <DiffView state={state} />
-                        </TabsContent>
-                        <TabsContent
-                            value="remote"
-                            className="flex-1 m-0 min-h-0"
-                        >
-                            <RemotePanel state={state} setState={setState} />
-                        </TabsContent>
-                    </Tabs>
+    const explainerTarget = highlight ? tabForHighlight(highlight.kind) : null;
 
-                    <CommandExplainer
-                        highlight={highlight}
-                        onClose={() => setHighlight(null)}
-                    />
-                </div>
-            </main>
+    const header = (
+        <Header
+            branch={branch}
+            repoPath={repo?.path}
+            cwd={state.cwd}
+            onReset={handleReset}
+            onShowHelp={() => setWelcomeOpen(true)}
+            onUndo={onUndo}
+            onRedo={onRedo}
+            canUndo={hist.canUndo}
+            canRedo={hist.canRedo}
+            soundEnabled={sound.enabled}
+            onToggleSound={() => {
+                sound.toggle();
+                sound.play("toggle");
+            }}
+            onOpenChallenges={() => {
+                setChallengesOpen(true);
+                // If there's an active challenge, jump straight to it.
+                setChallengeView(challenges.active ? "active" : "list");
+                sound.play("toggle");
+            }}
+            challengesDone={Object.keys(challenges.completed || {}).length}
+            challengesTotal={challenges.all.length}
+            isMobile={isMobile}
+        />
+    );
 
-            <StatusBar state={state} repo={repo} branch={branch} />
-
+    const overlays = (
+        <>
             <WelcomeOverlay
                 open={welcomeOpen}
                 onOpenChange={setWelcomeOpen}
             />
             <ChallengePanel
+                side={isMobile ? "bottom" : "right"}
                 open={challengesOpen}
                 onOpenChange={setChallengesOpen}
                 challenges={challenges}
@@ -360,7 +321,8 @@ export default function App() {
                 onViewActive={() => setChallengeView("active")}
             />
             <Toaster
-                position="top-right"
+                position={isMobile ? "top-center" : "top-right"}
+                offset={isMobile ? 64 : undefined}
                 theme="dark"
                 toastOptions={{
                     style: {
@@ -370,6 +332,122 @@ export default function App() {
                     },
                 }}
             />
+        </>
+    );
+
+    if (isMobile) {
+        return (
+            <div
+                className="app-height w-full flex flex-col bg-surface-0 text-white overflow-hidden"
+                data-testid="app-mobile"
+            >
+                {header}
+
+                <main className="flex-1 min-h-0 relative">
+                    {/* Terminal stays mounted so the typed draft survives tab switches. */}
+                    <div className={tab === "terminal" ? "h-full" : "hidden"}>
+                        {terminal}
+                    </div>
+                    {tab !== "terminal" && (
+                        <motion.div
+                            key={tab}
+                            initial={{ opacity: 0, y: 6 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            transition={{ duration: 0.16, ease: "easeOut" }}
+                            className="h-full relative"
+                            data-testid={`mobile-view-${tab}`}
+                        >
+                            {panels[tab]}
+                        </motion.div>
+                    )}
+                    <CommandExplainer
+                        highlight={highlight}
+                        onClose={() => setHighlight(null)}
+                        className="top-2 left-2 right-2 w-auto max-w-none"
+                        action={
+                            explainerTarget && tab !== explainerTarget
+                                ? {
+                                      label: `See ${TAB_LABELS[explainerTarget]}`,
+                                      onClick: () => {
+                                          changeTab(explainerTarget);
+                                          setHighlight(null);
+                                      },
+                                  }
+                                : null
+                        }
+                    />
+                </main>
+
+                {!keyboardOpen && (
+                    <MobileNav tab={tab} onChange={changeTab} badges={badges} />
+                )}
+
+                {overlays}
+            </div>
+        );
+    }
+
+    return (
+        <div className="h-screen w-screen flex flex-col bg-surface-0 text-white">
+            {header}
+
+            <main className="flex-1 grid grid-cols-1 lg:grid-cols-2 min-h-0 relative">
+                {/* LEFT — Terminal */}
+                <div className="border-r border-surface-3 min-h-0 flex flex-col">
+                    {terminal}
+                </div>
+
+                {/* RIGHT — Visual workspace */}
+                <div className="min-h-0 flex flex-col relative">
+                    <Tabs
+                        value={tab}
+                        onValueChange={changeTab}
+                        className="flex-1 flex flex-col min-h-0"
+                    >
+                        <div className="h-11 border-b border-surface-3 bg-surface-1/70 px-3 flex items-center justify-between flex-shrink-0 gap-2">
+                            <TabsList
+                                className="bg-surface-2 border border-surface-3 h-8 p-0.5"
+                                data-testid="right-panel-tabs"
+                            >
+                                {[
+                                    ["git", "Git Tree"],
+                                    ["files", "Files"],
+                                    ["editor", "Editor"],
+                                    ["diff", "Diff"],
+                                    ["remote", "Remote"],
+                                ].map(([value, label]) => (
+                                    <TabsTrigger
+                                        key={value}
+                                        value={value}
+                                        className={TAB_TRIGGER_CLS}
+                                        data-testid={`tab-${value}`}
+                                    >
+                                        {label}
+                                    </TabsTrigger>
+                                ))}
+                            </TabsList>
+                        </div>
+                        {Object.entries(panels).map(([value, panel]) => (
+                            <TabsContent
+                                key={value}
+                                value={value}
+                                className="flex-1 m-0 min-h-0 relative"
+                            >
+                                {panel}
+                            </TabsContent>
+                        ))}
+                    </Tabs>
+
+                    <CommandExplainer
+                        highlight={highlight}
+                        onClose={() => setHighlight(null)}
+                    />
+                </div>
+            </main>
+
+            <StatusBar state={state} repo={repo} branch={branch} />
+
+            {overlays}
         </div>
     );
 }

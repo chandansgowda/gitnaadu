@@ -40,6 +40,7 @@ export const ChallengePanel = ({
     viewMode,
     onViewList,
     onViewActive,
+    side = "right",
 }) => {
     const stats = useMemo(() => {
         const done = Object.keys(completed || {}).length;
@@ -53,10 +54,18 @@ export const ChallengePanel = ({
     return (
         <Sheet open={open} onOpenChange={onOpenChange}>
             <SheetContent
-                side="right"
-                className="bg-surface-1 border-surface-3 text-white w-full sm:max-w-md md:max-w-lg p-0 overflow-hidden flex flex-col"
+                side={side}
+                className={
+                    "bg-surface-1 border-surface-3 text-white p-0 overflow-hidden flex flex-col " +
+                    (side === "bottom"
+                        ? "h-[88dvh] rounded-t-2xl pb-safe"
+                        : "w-full sm:max-w-md md:max-w-lg")
+                }
                 data-testid="challenge-sheet"
             >
+                {side === "bottom" && (
+                    <div className="mx-auto mt-2.5 -mb-1 h-1 w-10 rounded-full bg-surface-3 flex-shrink-0" />
+                )}
                 <SheetHeader className="px-5 py-4 border-b border-surface-3 bg-surface-2/40 space-y-0">
                     <SheetTitle className="flex items-center gap-2 font-black tracking-tight text-base pr-10">
                         {effectiveView === "active" && active ? (
