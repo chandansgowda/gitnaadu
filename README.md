@@ -21,6 +21,7 @@ command parser all live in `src/lib/`.
 npm install      # install dependencies
 npm run dev      # start the dev server at http://localhost:3000
 npm run build    # produce a production bundle in dist/
+npm test         # run the engine unit tests (Jest)
 ```
 
 `npm start` is an alias for `npm run dev`.
@@ -37,9 +38,13 @@ src/
   hooks/            # useGitNaadu (state), useChallenges, useSound
   lib/              # the simulator core
     gitEngine.js    #   in-memory Git object model + operations
+    merge3.js       #   three-way merge + conflict markers
+    graphLayout.js  #   commit-graph lanes for the Git Tree panel
     commands.js     #   parses/executes terminal commands
     filesystem.js   #   virtual filesystem
+    objects.js      #   safe own-property lookups for name-keyed maps
     diff.js         #   diffing
+    __tests__/      #   Jest tests for the simulator core
     challenges.js   #   guided lessons/challenges
     initialState.js #   starting repo state
 public/

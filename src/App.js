@@ -33,6 +33,7 @@ const TREE_KINDS = new Set([
     "git-branch",
     "git-checkout",
     "git-merge",
+    "git-merge-abort",
     "git-rebase",
     "git-reset",
     "git-revert",
@@ -43,7 +44,7 @@ const TREE_KINDS = new Set([
 
 // Which workspace view best shows the effect of a highlighted command.
 const tabForHighlight = (kind = "") => {
-    if (kind === "git-diff") return "diff";
+    if (kind === "git-diff" || kind === "git-merge-conflict") return "diff";
     if (kind === "git-push" || kind === "git-fetch") return "remote";
     if (TREE_KINDS.has(kind)) return "git";
     return null;
@@ -69,6 +70,13 @@ export default function App() {
     const [selectedCommit, setSelectedCommit] = useState(null);
     const [challengesOpen, setChallengesOpen] = useState(false);
     const [challengeView, setChallengeView] = useState("list"); // "list" | "active"
+    // Bumped to ask the Terminal to focus its input (e.g. "Open the terminal").
+    const [terminalFocus, setTerminalFocus] = useState(0);
+
+    const openTerminal = useCallback(() => {
+        if (isMobile) setTab("terminal");
+        setTerminalFocus((n) => n + 1);
+    }, [isMobile]);
 
     const lastCommand = state.history.length
         ? state.history[state.history.length - 1]
@@ -264,6 +272,7 @@ export default function App() {
             onHighlight={setHighlight}
             onSound={playForHighlight}
             isMobile={isMobile}
+            focusSignal={terminalFocus}
         />
     );
 
@@ -302,6 +311,7 @@ export default function App() {
             <WelcomeOverlay
                 open={welcomeOpen}
                 onOpenChange={setWelcomeOpen}
+                onStart={openTerminal}
             />
             <ChallengePanel
                 side={isMobile ? "bottom" : "right"}

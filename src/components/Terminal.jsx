@@ -83,6 +83,7 @@ export const Terminal = ({
     onHighlight,
     onSound,
     isMobile = false,
+    focusSignal = 0,
 }) => {
     const [input, setInput] = useState("");
     const [historyIdx, setHistoryIdx] = useState(-1);
@@ -114,6 +115,14 @@ export const Terminal = ({
     useEffect(() => {
         if (!isTouchDevice()) inputRef.current?.focus();
     }, []);
+
+    // Explicit request from the parent (e.g. the welcome dialog's "Open the
+    // terminal" button). Runs after the parent has made this pane visible.
+    useEffect(() => {
+        if (!focusSignal) return;
+        inputRef.current?.focus();
+        scrollToBottom();
+    }, [focusSignal]);
 
     const submit = () => {
         const raw = input;

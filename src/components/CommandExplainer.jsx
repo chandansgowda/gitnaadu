@@ -35,6 +35,16 @@ const EXPLAIN = {
         title: "Branches merged",
         body: "Histories were combined. If the branches diverged, a merge commit with two parents is created. Otherwise it's a fast-forward.",
     },
+    "git-merge-conflict": {
+        icon: GitMerge,
+        title: "Merge conflict",
+        body: "Both branches changed the same lines, so Git stopped half-way. Open each conflicted file, keep the lines you want, delete the <<<<<<< ======= >>>>>>> markers, then `git add` it and `git commit`. `git merge --abort` undoes the whole merge.",
+    },
+    "git-merge-abort": {
+        icon: RotateCcw,
+        title: "Merge aborted",
+        body: "The half-finished merge was thrown away. Your branch, index and working tree are back exactly as they were before `git merge`.",
+    },
     "git-rebase": {
         icon: GitMerge,
         title: "History replayed",
