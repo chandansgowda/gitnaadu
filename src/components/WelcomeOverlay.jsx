@@ -1,12 +1,17 @@
+import { useRef } from "react";
 import { motion } from "framer-motion";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "./ui/dialog";
 import { Button } from "./ui/button";
-import { ArrowRight, GitBranch, Terminal, Folder, Sparkles } from "lucide-react";
+import { ArrowRight, GitBranch, Terminal, Folder } from "lucide-react";
 import coverImage from "../assets/cover.webp";
 
 const STORAGE_FLAG = "gitnaadu:welcome-seen";
 
-export const WelcomeOverlay = ({ open, onOpenChange }) => {
+// `onStart` runs after the dialog has fully closed when the user picks
+// "Open the terminal", so the caller can show + focus the terminal input.
+export const WelcomeOverlay = ({ open, onOpenChange, onStart }) => {
+    const startRequested = useRef(false);
+
     const close = () => {
         try {
             window.localStorage.setItem(STORAGE_FLAG, "1");
@@ -14,6 +19,20 @@ export const WelcomeOverlay = ({ open, onOpenChange }) => {
             // ignore
         }
         onOpenChange(false);
+    };
+
+    const start = () => {
+        startRequested.current = true;
+        close();
+    };
+
+    // Radix returns focus to whatever was focused before the dialog opened
+    // (usually <body>), which would undo our focus. Take over instead.
+    const onCloseAutoFocus = (e) => {
+        if (!startRequested.current) return;
+        startRequested.current = false;
+        e.preventDefault();
+        onStart?.();
     };
 
     const tips = [
@@ -39,6 +58,7 @@ export const WelcomeOverlay = ({ open, onOpenChange }) => {
             <DialogContent
                 className="max-w-2xl w-[calc(100%-1.5rem)] max-h-[calc(100dvh-1.5rem)] rounded-2xl sm:rounded-lg bg-surface-1 border-surface-3 text-white p-0 overflow-y-auto overflow-x-hidden"
                 data-testid="welcome-overlay"
+                onCloseAutoFocus={onCloseAutoFocus}
             >
                 <div className="relative">
                     <div
@@ -99,7 +119,7 @@ export const WelcomeOverlay = ({ open, onOpenChange }) => {
                                 completion
                             </code>
                             <Button
-                                onClick={close}
+                                onClick={start}
                                 className="bg-yellow text-black hover:bg-yellow/90 font-semibold px-5 w-full md:w-auto h-11 md:h-9"
                                 data-testid="welcome-start-btn"
                             >

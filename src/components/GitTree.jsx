@@ -1,7 +1,8 @@
 import { useMemo, useRef, useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { GitBranch, GitCommit, Tag } from "lucide-react";
-import { buildGraph, findRepo } from "../lib/gitEngine";
+import { findRepo } from "../lib/gitEngine";
+import { buildGraph } from "../lib/graphLayout";
 
 const ROW_HEIGHT = 60;
 const LANE_WIDTH = 36;

@@ -2,9 +2,7 @@
 // Returns array of output lines: { kind: 'out'|'err'|'del'|'muted'|'system'|'success', text: string }
 // 'err' is a real error (fails an `&&` chain, plays the error sound); 'del' is
 // ordinary output shown in red (deleted / modified / untracked, diff "-" lines).
-import {
-    HOME,
-} from "./initialState";
+import { HOME } from "./initialState";
 import {
     normalizePath,
     expandTilde,
@@ -17,17 +15,19 @@ import {
     ensureDir,
     copy,
     move,
-    baseName,
+    dirName,
 } from "./filesystem";
 import {
     newRepo,
     findRepo,
+    ensureRepoShape,
     gitAdd,
     gitCommit,
     gitLog,
     gitBranch,
     gitCheckout,
     gitMerge,
+    gitMergeAbort,
     gitRebase,
     gitReset,
     gitRevert,
@@ -48,6 +48,7 @@ import {
     gitConfig,
     stageTracked,
     relPath,
+    resolveRev,
     computeDiffPairs,
     remoteAheadBehind,
     status as gitStatus,
@@ -55,6 +56,7 @@ import {
     headCommit,
 } from "./gitEngine";
 import { diffHunks, diffStats } from "./diff";
+import { has, get } from "./objects";
 
 const out = (text) => ({ kind: "out", text });
 const err = (text) => ({ kind: "err", text });
@@ -62,44 +64,120 @@ const muted = (text) => ({ kind: "muted", text });
 const del = (text) => ({ kind: "del", text });
 const ok = (text) => ({ kind: "success", text });
 
-const tokenize = (line) => {
-    // simple shell tokenizer with quotes
-    const out = [];
+// Multi-line engine errors become one terminal line each.
+const errLines = (text) => String(text).split("\n").map(err);
+
+// ---------------------------------------------------------------------------
+// Shell syntax: words, quotes ('...', "..."), backslash escapes, and the
+// operators && || ; > >>. Operators only count outside quotes, so
+// `echo "a > b"` prints the text instead of redirecting.
+// ---------------------------------------------------------------------------
+const lex = (line) => {
+    const toks = [];
     let cur = "";
+    let inWord = false;
     let q = null;
+    const flush = () => {
+        if (inWord) toks.push({ t: "word", v: cur });
+        cur = "";
+        inWord = false;
+    };
     for (let i = 0; i < line.length; i++) {
         const ch = line[i];
-        if (q) {
-            if (ch === q) {
-                q = null;
-            } else {
-                cur += ch;
-            }
-        } else if (ch === '"' || ch === "'") {
-            q = ch;
-        } else if (ch === " " || ch === "\t") {
-            if (cur) {
-                out.push(cur);
-                cur = "";
-            }
-        } else {
-            cur += ch;
+        if (q === "'") {
+            if (ch === "'") q = null;
+            else cur += ch;
+            continue;
         }
+        if (q === '"') {
+            if (ch === '"') q = null;
+            else if (ch === "\\" && '"\\$`'.includes(line[i + 1] || "")) cur += line[++i];
+            else cur += ch;
+            continue;
+        }
+        if (ch === "\\") {
+            if (i + 1 < line.length) cur += line[++i];
+            inWord = true;
+            continue;
+        }
+        if (ch === "'" || ch === '"') {
+            q = ch;
+            inWord = true;
+            continue;
+        }
+        if (ch === " " || ch === "\t") {
+            flush();
+            continue;
+        }
+        const two = line.slice(i, i + 2);
+        if (two === "&&" || two === "||" || two === ">>") {
+            flush();
+            toks.push({ t: "op", v: two });
+            i++;
+            continue;
+        }
+        if (";|>&".includes(ch)) {
+            flush();
+            toks.push({ t: "op", v: ch });
+            continue;
+        }
+        cur += ch;
+        inWord = true;
     }
-    if (cur) out.push(cur);
-    return out;
+    if (q) return { error: `unexpected end of input: missing closing ${q}` };
+    flush();
+    return { toks };
+};
+
+// → { cmds: [{ words, redirect: {mode,target}|null, next: '&&'|'||'|';'|null }] }
+const parse = (line) => {
+    const lx = lex(line);
+    if (lx.error) return { error: lx.error };
+    const cmds = [];
+    let cur = { words: [], redirect: null, next: null };
+    let pendingRedirect = null;
+    const isEmpty = (c) => c.words.length === 0 && !c.redirect;
+    for (const tok of lx.toks) {
+        if (tok.t === "word") {
+            if (pendingRedirect) {
+                cur.redirect = { mode: pendingRedirect, target: tok.v };
+                pendingRedirect = null;
+            } else cur.words.push(tok.v);
+            continue;
+        }
+        if (pendingRedirect) return { error: `syntax error near unexpected token '${tok.v}'` };
+        if (tok.v === "|") return { error: "pipes (|) aren't supported in this simulator — run the commands one at a time" };
+        if (tok.v === "&") return { error: "background jobs (&) aren't supported — did you mean && ?" };
+        if (tok.v === ">" || tok.v === ">>") {
+            pendingRedirect = tok.v;
+            continue;
+        }
+        // && || ;
+        if (isEmpty(cur)) return { error: `syntax error near unexpected token '${tok.v}'` };
+        cur.next = tok.v;
+        cmds.push(cur);
+        cur = { words: [], redirect: null, next: null };
+    }
+    if (pendingRedirect) return { error: "syntax error near unexpected token 'newline'" };
+    if (!isEmpty(cur)) cmds.push(cur);
+    else if (cmds.length && cmds[cmds.length - 1].next !== ";")
+        return { error: `syntax error: '${cmds[cmds.length - 1].next}' needs a command after it` };
+    return { cmds };
 };
 
 const splitFlags = (args) => {
     const flags = new Set();
     const rest = [];
+    let endOfFlags = false;
     for (const a of args) {
-        if (a.startsWith("-") && a !== "-") {
-            // handle -rf as two flags
-            if (a.startsWith("--")) flags.add(a);
-            else {
-                for (const c of a.slice(1)) flags.add("-" + c);
-            }
+        if (endOfFlags) rest.push(a);
+        else if (a === "--") {
+            flags.add(a);
+            endOfFlags = true;
+        } else if (a.startsWith("--")) flags.add(a);
+        else if (a.startsWith("-") && a !== "-") {
+            // -rf → -r, -f
+            for (const c of a.slice(1)) flags.add("-" + c);
         } else rest.push(a);
     }
     return { flags, rest };
@@ -108,154 +186,119 @@ const splitFlags = (args) => {
 const HELP_TEXT = [
     "Available commands:",
     "  Linux:  pwd, ls, cd, mkdir, touch, rm, cp, mv, cat, head, tail, clear, echo, tree, whoami, help",
-    "  Git:    git init, git status, git add, git commit (--amend), git log, git show, git diff (--staged),",
-    "          git branch (-d/-m), git checkout, git switch, git tag, git merge, git rebase,",
-    "          git cherry-pick, git reset, git revert, git restore, git rm, git mv,",
+    "  Shell:  a && b (run b if a worked), a || b (run b if a failed), a ; b, > and >> redirects",
+    "  Git:    git init, git status, git add, git commit (-a/-m/--amend), git log, git show, git diff (--staged),",
+    "          git branch (-d/-D/-m), git checkout, git switch, git tag, git merge (--abort/--continue),",
+    "          git rebase, git cherry-pick, git reset, git revert, git restore, git rm, git mv,",
     "          git stash / pop, git reflog, git push, git pull, git fetch, git clone,",
     "          git remote, git config, git --version",
     "  Tip:    Press ↑ ↓ for history, Tab for path completion, Ctrl+L to clear.",
 ];
 
-// Split a line on `&&` (outside quotes) into separate commands.
-const splitChain = (line) => {
-    const parts = [];
-    let cur = "";
-    let q = null;
-    for (let i = 0; i < line.length; i++) {
-        const ch = line[i];
-        if (q) {
-            if (ch === q) q = null;
-        } else if (ch === '"' || ch === "'") {
-            q = ch;
-        } else if (ch === "&" && line[i + 1] === "&") {
-            parts.push(cur);
-            cur = "";
-            i++;
-            continue;
-        }
-        cur += ch;
-    }
-    parts.push(cur);
-    return parts.map((p) => p.trim()).filter(Boolean);
-};
+// Each command works on its own copy of the filesystem and repos, so the
+// caller's state (the undo checkpoint) is never touched. Terminal lines and
+// history aren't copied: commands don't modify them.
+const cloneWorld = (state) => ({
+    ...state,
+    fs: JSON.parse(JSON.stringify(state.fs)),
+    repos: JSON.parse(JSON.stringify(state.repos || {})),
+});
 
-// `a && b && c`: run each command in turn, stopping at the first one that
-// fails (executeSingle's `failed` flag). The last highlight wins.
+// Run a whole input line. `a && b`, `a || b` and `a ; b` follow shell rules;
+// the last highlight wins.
 export const executeCommand = (state, rawLine) => {
-    const segments = splitChain(rawLine || "");
-    if (segments.length <= 1) return executeSingle(state, rawLine);
-    let cur = state;
-    let output = [];
-    let highlight = null;
-    for (const seg of segments) {
-        const r = executeSingle(cur, seg);
-        cur = r.state;
-        output = output.concat(r.output || []);
-        if (r.highlight) highlight = r.highlight;
-        if (r.failed) break;
-    }
-    return { state: cur, output, highlight };
-};
-
-// Wraps runSingle and flags failure: a handler may say `failed` explicitly;
-// otherwise any real error line (kind "err") means the command failed.
-const executeSingle = (state, rawLine) => {
-    const r = runSingle(state, rawLine);
-    const failed = r.failed !== undefined ? !!r.failed : (r.output || []).some((l) => l.kind === "err");
-    return { ...r, failed };
-};
-
-const runSingle = (state, rawLine) => {
     const line = (rawLine || "").trim();
     if (!line) return { state, output: [] };
-
-    // Deep clone state up-front so handlers can mutate freely without
-    // touching the caller's object. This is what makes undo / redo correct
-    // (the snapshot for undo is the original `state`, not a mutated version).
-    state = JSON.parse(JSON.stringify(state));
-
-    const tokens = tokenize(line);
-
-    // Handle simple > and >> redirection: <cmd ...> [>|>>] target
-    let redirect = null;
-    const ri = tokens.findIndex((t) => t === ">" || t === ">>");
-    if (ri !== -1 && ri < tokens.length - 1) {
-        redirect = { mode: tokens[ri], target: tokens[ri + 1] };
-        tokens.splice(ri, 2);
-    }
-
-    const cmd = tokens[0];
-    const args = tokens.slice(1);
-    if (!cmd && redirect) {
-        // bare `> file` just creates / truncates the file
-        const target = normalizePath(state.cwd, expandTilde(redirect.target));
-        const wr = writeFileIfNotDir(state.fs, target);
-        return { state, output: wr.error ? [err(wr.error)] : [] };
-    }
-    const handler = Object.prototype.hasOwnProperty.call(HANDLERS, cmd) ? HANDLERS[cmd] : null;
+    const parsed = parse(line);
+    if (parsed.error) return { state, output: [err(`gitnaadu: ${parsed.error}`)], failed: true };
+    let cur = cloneWorld(state);
     let output = [];
     let highlight = null;
-    if (!handler) {
-        if (cmd === "git") {
-            // unrecognized git subcommand will be hit below
-        } else {
-            return {
-                state,
-                output: [err(`${cmd}: command not found`), muted(`type \`help\` for list of available commands`)],
-            };
+    let lastFailed = false;
+    let connector = null;
+    for (const cmd of parsed.cmds) {
+        const skip = (connector === "&&" && lastFailed) || (connector === "||" && !lastFailed);
+        if (!skip) {
+            const r = runSimple(cur, cmd);
+            cur = r.state;
+            output = output.concat(r.output || []);
+            if (r.highlight) highlight = r.highlight;
+            lastFailed = r.failed;
         }
+        connector = cmd.next;
     }
-    const result = handler(state, args, line);
-    output = result.output || [];
-    if (result.highlight) highlight = result.highlight;
-    let nextState = result.state || state;
-
-    if (redirect && output.length > 0) {
-        // Concatenate textual content of output lines (skip non-text kinds).
-        // Like a real shell, every written line ends with a newline.
-        const text = output
-            .flatMap((l) =>
-                l.kind === "out" || l.kind === "muted" || l.kind === "success" || l.kind === "del"
-                    ? [l.text]
-                    : l.kind === "ls"
-                        ? l.items.map((it) => it.name)
-                        : [],
-            )
-            .map((t) => t + "\n")
-            .join("");
-        const errors = output.filter((l) => l.kind === "err");
-        const target = normalizePath(nextState.cwd, expandTilde(redirect.target));
-        const existing = getNode(nextState.fs, target);
-        const prev =
-            redirect.mode === ">>" && existing && existing.type === "file"
-                ? (existing.content || "") + (existing.content && !existing.content.endsWith("\n") ? "\n" : "") + text
-                : text;
-        const wr = createFile(nextState.fs, target, prev);
-        if (wr.error) {
-            return {
-                state: nextState,
-                output: [err(`${cmd}: ${wr.error}`)],
-                highlight,
-            };
-        }
-        // Overwrite content if file existed
-        const node = getNode(nextState.fs, target);
-        if (node && node.type === "file") node.content = prev;
-        // Suppress original output when redirected (errors still go to the terminal)
-        return { state: nextState, output: errors, highlight };
-    }
-
-    return {
-        state: nextState,
-        output,
-        highlight,
-    };
+    return { state: cur, output, highlight, failed: lastFailed };
 };
 
-const writeFileIfNotDir = (fs, path) => {
-    const node = getNode(fs, path);
-    if (node && node.type === "dir") return { error: `${baseName(path)}: Is a directory` };
-    return writeFile(fs, path, "");
+const TEXT_KINDS = new Set(["out", "muted", "success", "del"]);
+
+const runSimple = (state, { words, redirect }) => {
+    let result;
+    if (words.length === 0) {
+        result = { state, output: [] }; // bare `> file` just creates / truncates it
+    } else {
+        const [cmd, ...args] = words;
+        const handler = get(HANDLERS, cmd);
+        result = handler
+            ? handler(state, args)
+            : { state, output: [err(`${cmd}: command not found`), muted("type `help` for list of available commands")] };
+    }
+    const nextState = result.state || state;
+    let output = result.output || [];
+    let failed = result.failed !== undefined ? !!result.failed : output.some((l) => l.kind === "err");
+
+    if (redirect) {
+        // Like a real shell, every written line ends with a newline; errors
+        // still go to the terminal.
+        const text = output
+            .flatMap((l) => (TEXT_KINDS.has(l.kind) ? [l.text] : l.kind === "ls" ? l.items.map((it) => it.name) : []))
+            .map((t) => t + "\n")
+            .join("");
+        const target = normalizePath(nextState.cwd, expandTilde(redirect.target));
+        const existing = getNode(nextState.fs, target);
+        const content =
+            redirect.mode === ">>" && existing?.type === "file"
+                ? existing.content + (existing.content && !existing.content.endsWith("\n") ? "\n" : "") + text
+                : text;
+        const wr = writeFile(nextState.fs, target, content);
+        output = output.filter((l) => l.kind === "err");
+        if (wr.error) {
+            output.push(err(`gitnaadu: ${redirect.target}: ${wr.error}`));
+            failed = true;
+        }
+    }
+    return { state: nextState, output, highlight: result.highlight || null, failed };
+};
+
+// ---------------------------------------------------------------------------
+// Keep state.repos in step with the filesystem when directories move.
+// ---------------------------------------------------------------------------
+const isUnder = (p, root) => p === root || p.startsWith(root === "/" ? "/" : root + "/");
+
+const dropRepos = (state, path) => {
+    for (const k of Object.keys(state.repos)) if (isUnder(k, path)) delete state.repos[k];
+};
+
+const relocateRepos = (state, from, to, keepOriginal) => {
+    const moved = {};
+    for (const [k, r] of Object.entries(state.repos)) {
+        if (!isUnder(k, from)) continue;
+        const nk = to + k.slice(from.length);
+        const repo = keepOriginal ? JSON.parse(JSON.stringify(r)) : r;
+        if (!keepOriginal) delete state.repos[k];
+        repo.path = nk;
+        moved[nk] = repo;
+    }
+    Object.assign(state.repos, moved);
+};
+
+// After a directory was removed, step out to the nearest existing parent.
+const fixCwd = (state) => {
+    let p = state.cwd;
+    while (p !== "/" && getNode(state.fs, p)?.type !== "dir") p = dirName(p);
+    const moved = p !== state.cwd;
+    state.cwd = p;
+    return moved;
 };
 
 const HANDLERS = {};
@@ -279,11 +322,9 @@ HANDLERS.pwd = (state) => ({ state, output: [out(state.cwd)] });
 
 HANDLERS.ls = (state, args) => {
     const { flags, rest } = splitFlags(args);
-    const target = rest[0]
-        ? normalizePath(state.cwd, expandTilde(rest[0]))
-        : state.cwd;
+    const target = rest[0] ? normalizePath(state.cwd, expandTilde(rest[0])) : state.cwd;
     const node = getNode(state.fs, target);
-    if (!node) return { state, output: [err(`ls: cannot access '${target}': No such file or directory`)] };
+    if (!node) return { state, output: [err(`ls: cannot access '${rest[0]}': No such file or directory`)] };
     if (node.type === "file") return { state, output: [out(node.name)] };
     const items = listDir(node);
     if (items.length === 0) return { state, output: [muted("(empty)")] };
@@ -295,18 +336,14 @@ HANDLERS.ls = (state, args) => {
         });
         return { state, output: lines };
     }
-    const line = items
-        .map((it) =>
-            it.type === "dir" ? `\x01dir\x02${it.name}/\x03` : `\x01file\x02${it.name}\x03`,
-        )
-        .join("  ");
-    return { state, output: [{ kind: "ls", items }] };
+    // Only names and types: terminal lines are persisted, so they must not
+    // hold on to whole subtrees.
+    return { state, output: [{ kind: "ls", items: items.map((it) => ({ name: it.name, type: it.type })) }] };
 };
 
 HANDLERS.cd = (state, args) => {
     const target = args[0] || HOME;
-    const expanded = expandTilde(target);
-    const next = normalizePath(state.cwd, expanded);
+    const next = normalizePath(state.cwd, expandTilde(target));
     const node = getNode(state.fs, next);
     if (!node) return { state, output: [err(`cd: no such file or directory: ${target}`)] };
     if (node.type !== "dir") return { state, output: [err(`cd: not a directory: ${target}`)] };
@@ -321,7 +358,7 @@ HANDLERS.mkdir = (state, args) => {
         const p = normalizePath(state.cwd, expandTilde(t));
         if (flags.has("-p")) {
             // create missing parents; existing dirs are fine
-            if (!ensureDir(state.fs, p)) lines.push(err(`mkdir: cannot create directory '${t}': Not a directory`));
+            if (!ensureDir(state.fs, p)) lines.push(err(`mkdir: cannot create directory '${t}'`));
             continue;
         }
         const r = makeDir(state.fs, p);
@@ -334,8 +371,7 @@ HANDLERS.touch = (state, args) => {
     if (args.length === 0) return { state, output: [err("touch: missing file operand")] };
     const lines = [];
     for (const t of args) {
-        const p = normalizePath(state.cwd, expandTilde(t));
-        const r = createFile(state.fs, p, "");
+        const r = createFile(state.fs, normalizePath(state.cwd, expandTilde(t)), "");
         if (r.error) lines.push(err(`touch: ${r.error}`));
     }
     return { state, output: lines };
@@ -348,11 +384,14 @@ HANDLERS.rm = (state, args) => {
     for (const t of rest) {
         const p = normalizePath(state.cwd, expandTilde(t));
         if (flags.has("-f") && !getNode(state.fs, p)) continue; // -f: ignore missing files
-        const r = remove(state.fs, p, {
-            recursive: flags.has("-r") || flags.has("-R"),
-        });
-        if (r.error) lines.push(err(`rm: ${r.error}`));
+        const r = remove(state.fs, p, { recursive: flags.has("-r") || flags.has("-R") });
+        if (r.error) {
+            lines.push(err(`rm: ${r.error}`));
+            continue;
+        }
+        dropRepos(state, p); // deleting a repo's folder deletes its history too
     }
+    if (fixCwd(state)) lines.push(muted(`(the current directory was removed — now in ${state.cwd})`));
     return { state, output: lines };
 };
 
@@ -363,76 +402,76 @@ HANDLERS.cp = (state, args) => {
     const dst = normalizePath(state.cwd, expandTilde(rest[1]));
     const r = copy(state.fs, src, dst, { recursive: flags.has("-r") || flags.has("-R") });
     if (r.error) return { state, output: [err(`cp: ${r.error}`)] };
+    relocateRepos(state, src, r.path, true); // a copied repo keeps its .git
     return { state, output: [] };
 };
 
 HANDLERS.mv = (state, args) => {
-    if (args.length < 2) return { state, output: [err("mv: missing operand")] };
-    const src = normalizePath(state.cwd, expandTilde(args[0]));
-    const dst = normalizePath(state.cwd, expandTilde(args[1]));
+    const { rest } = splitFlags(args);
+    if (rest.length < 2) return { state, output: [err("mv: missing operand")] };
+    const src = normalizePath(state.cwd, expandTilde(rest[0]));
+    const dst = normalizePath(state.cwd, expandTilde(rest[1]));
     const r = move(state.fs, src, dst);
     if (r.error) return { state, output: [err(`mv: ${r.error}`)] };
+    relocateRepos(state, src, r.path, false);
+    if (isUnder(state.cwd, src)) state.cwd = r.path + state.cwd.slice(src.length);
     return { state, output: [] };
 };
 
 // Lines of a file; a trailing newline ends the last line, it doesn't start a new one.
 const fileLines = (content) => (content ? content.replace(/\n$/, "").split("\n") : []);
 
+const readFile = (state, cmd, t) => {
+    const node = getNode(state.fs, normalizePath(state.cwd, expandTilde(t)));
+    if (!node) return { error: `${cmd}: ${t}: No such file or directory` };
+    if (node.type !== "file") return { error: `${cmd}: ${t}: Is a directory` };
+    return { lines: fileLines(node.content) };
+};
+
 HANDLERS.cat = (state, args) => {
     if (args.length === 0) return { state, output: [err("cat: missing file")] };
     const lines = [];
     for (const t of args) {
-        const p = normalizePath(state.cwd, expandTilde(t));
-        const node = getNode(state.fs, p);
-        if (!node) {
-            lines.push(err(`cat: ${t}: No such file or directory`));
-            continue;
-        }
-        if (node.type !== "file") {
-            lines.push(err(`cat: ${t}: Is a directory`));
-            continue;
-        }
-        fileLines(node.content).forEach((l) => lines.push(out(l)));
+        const r = readFile(state, "cat", t);
+        if (r.error) lines.push(err(r.error));
+        else r.lines.forEach((l) => lines.push(out(l)));
     }
     return { state, output: lines };
 };
 
-HANDLERS.head = (state, args) => {
-    if (args.length === 0) return { state, output: [err("head: missing file")] };
-    const path = normalizePath(state.cwd, expandTilde(args[args.length - 1]));
-    const node = getNode(state.fs, path);
-    if (!node || node.type !== "file")
-        return { state, output: [err(`head: ${args[args.length - 1]}: No such file`)] };
-    const lines = fileLines(node.content).slice(0, 10).map(out);
+// head / tail with -n N, -N and -nN.
+const headTail = (cmd, pick) => (state, args) => {
+    let n = 10;
+    const files = [];
+    for (let i = 0; i < args.length; i++) {
+        const a = args[i];
+        if (a === "-n" && /^\d+$/.test(args[i + 1] || "")) n = Number(args[++i]);
+        else if (/^-n?\d+$/.test(a)) n = Number(a.replace(/^-n?/, ""));
+        else files.push(a);
+    }
+    if (files.length === 0) return { state, output: [err(`${cmd}: missing file`)] };
+    const lines = [];
+    for (const t of files) {
+        const r = readFile(state, cmd, t);
+        if (r.error) lines.push(err(r.error));
+        else pick(r.lines, n).forEach((l) => lines.push(out(l)));
+    }
     return { state, output: lines };
 };
 
-HANDLERS.tail = (state, args) => {
-    if (args.length === 0) return { state, output: [err("tail: missing file")] };
-    const path = normalizePath(state.cwd, expandTilde(args[args.length - 1]));
-    const node = getNode(state.fs, path);
-    if (!node || node.type !== "file")
-        return { state, output: [err(`tail: ${args[args.length - 1]}: No such file`)] };
-    const all = fileLines(node.content);
-    return { state, output: all.slice(Math.max(0, all.length - 10)).map(out) };
-};
+HANDLERS.head = headTail("head", (lines, n) => lines.slice(0, n));
+HANDLERS.tail = headTail("tail", (lines, n) => (n === 0 ? [] : lines.slice(-n)));
 
 HANDLERS.tree = (state, args) => {
-    const target = args[0]
-        ? normalizePath(state.cwd, expandTilde(args[0]))
-        : state.cwd;
+    const target = args[0] ? normalizePath(state.cwd, expandTilde(args[0])) : state.cwd;
     const node = getNode(state.fs, target);
-    if (!node || node.type !== "dir")
-        return { state, output: [err(`tree: ${target}: Not a directory`)] };
+    if (!node || node.type !== "dir") return { state, output: [err(`tree: ${target}: Not a directory`)] };
     const lines = [out(target)];
     const walk = (n, prefix) => {
         const items = listDir(n);
         items.forEach((it, i) => {
             const last = i === items.length - 1;
-            const branch = last ? "└── " : "├── ";
-            lines.push(
-                out(prefix + branch + it.name + (it.type === "dir" ? "/" : "")),
-            );
+            lines.push(out(prefix + (last ? "└── " : "├── ") + it.name + (it.type === "dir" ? "/" : "")));
             if (it.type === "dir") walk(it, prefix + (last ? "    " : "│   "));
         });
     };
@@ -442,126 +481,162 @@ HANDLERS.tree = (state, args) => {
 
 // -------- GIT --------
 HANDLERS.git = (state, args) => {
-    if (args.length === 0)
-        return { state, output: [muted("usage: git <command> [<args>]")] };
-    const sub = args[0];
-    const rest = args.slice(1);
-    const dispatch = Object.prototype.hasOwnProperty.call(GIT_HANDLERS, sub) ? GIT_HANDLERS[sub] : null;
-    if (!dispatch)
-        return { state, output: [err(`git: '${sub}' is not a git command. See 'help'.`)] };
-    return dispatch(state, rest);
+    if (args.length === 0) return { state, output: [muted("usage: git <command> [<args>]")] };
+    const dispatch = get(GIT_HANDLERS, args[0]);
+    if (!dispatch) return { state, output: [err(`git: '${args[0]}' is not a git command. See 'help'.`)] };
+    return dispatch(state, args.slice(1));
 };
 
 const GIT_HANDLERS = {};
 
-GIT_HANDLERS.init = (state) => {
-    const cwd = state.cwd;
-    if (state.repos[cwd])
-        return { state, output: [muted(`Reinitialized existing Git repository in ${cwd}/.git/`)] };
-    const repo = newRepo(cwd);
-    const newRepos = { ...state.repos, [cwd]: repo };
-    return {
-        state: { ...state, repos: newRepos },
-        output: [ok(`Initialized empty Git repository in ${cwd}/.git/`)],
-        highlight: { kind: "git-init", path: cwd },
-    };
-};
+const NOT_A_REPO = "fatal: not a git repository (or any of the parent directories): .git";
 
-const requireRepo = (state) => {
-    const repo = findRepo(state.repos, state.cwd);
-    if (!repo) return null;
-    return repo;
+// The state here is a private copy (see cloneWorld), so migrating an old
+// saved repo in place is safe.
+const requireRepo = (state) => ensureRepoShape(findRepo(state.repos, state.cwd));
+
+const withRepo = (fn) => (state, args) => {
+    const repo = requireRepo(state);
+    if (!repo) return { state, output: [err(NOT_A_REPO)] };
+    return fn(state, repo, args);
 };
 
 // Path argument (relative to cwd) → path relative to the repo root.
-const repoPath = (state, repo, p) =>
-    relPath(repo, normalizePath(state.cwd, expandTilde(p)));
+const repoPath = (state, repo, p) => relPath(repo, normalizePath(state.cwd, expandTilde(p)));
 
 const shortRef = (repo) => currentBranch(repo) || `HEAD detached at ${(headCommit(repo) || "").slice(0, 7)}`;
 
-GIT_HANDLERS.status = (state) => {
-    const repo = requireRepo(state);
-    if (!repo)
-        return { state, output: [err("fatal: not a git repository (or any of the parent directories): .git")] };
+// Most history-changing commands refuse to run while a merge is half done.
+const blockedByMerge = (state, repo, op) => {
+    const m = repo.merging;
+    if (!m) return null;
+    const output = m.conflicts.length
+        ? [
+              err(`error: ${op} is not possible because you have unmerged files:`),
+              ...m.conflicts.map((p) => del(`  ${p}`)),
+              muted("hint: fix them up, `git add` them and `git commit` — or run `git merge --abort`."),
+          ]
+        : [
+              err("fatal: You have not concluded your merge (MERGE_HEAD exists)."),
+              muted("hint: run `git commit` to finish the merge, or `git merge --abort` to cancel it."),
+          ];
+    return { state, output };
+};
+
+const conflictLine = (p, kind, label) => {
+    if (kind === "deleted by them") return del(`CONFLICT (modify/delete): ${p} deleted in ${label} and modified in HEAD.`);
+    if (kind === "deleted by us") return del(`CONFLICT (modify/delete): ${p} deleted in HEAD and modified in ${label}.`);
+    if (kind === "both added") return del(`CONFLICT (add/add): Merge conflict in ${p}`);
+    return del(`CONFLICT (content): Merge conflict in ${p}`);
+};
+
+const conflictReport = (state, r, label) => ({
+    state,
+    output: [
+        ...r.conflicts.map((p) => muted(`Auto-merging ${p}`)),
+        ...r.conflicts.map((p) => conflictLine(p, get(r.kinds, p), label)),
+        err("Automatic merge failed; fix conflicts and then commit the result."),
+        muted("hint: open each file (Files tab or `cat`), keep the lines you want and delete the"),
+        muted("hint: <<<<<<< ======= >>>>>>> markers. Then `git add <file>` and `git commit`."),
+        muted("hint: changed your mind? `git merge --abort` puts everything back."),
+    ],
+    highlight: { kind: "git-merge-conflict", branch: label, count: r.conflicts.length },
+    failed: true,
+});
+
+// Patch-style output shared by `git diff` and `git show`.
+const renderPatch = (pairs) =>
+    pairs.flatMap((p) => {
+        const s = diffStats(p.before, p.after);
+        const lines = [ok(`--- ${p.path}  +${s.adds} -${s.dels}`)];
+        for (const h of diffHunks(p.before, p.after, 2)) {
+            lines.push(muted(`@@ -${h.oldStart} +${h.newStart} @@`));
+            for (const l of h.lines) {
+                if (l.type === "add") lines.push(ok("+ " + l.text));
+                else if (l.type === "del") lines.push(del("- " + l.text));
+                else lines.push(muted("  " + l.text));
+            }
+        }
+        return lines;
+    });
+
+GIT_HANDLERS.init = (state, args) => {
+    const { rest } = splitFlags(args);
+    const dir = rest[0] ? normalizePath(state.cwd, expandTilde(rest[0])) : state.cwd;
+    const node = getNode(state.fs, dir);
+    if (node && node.type !== "dir") return { state, output: [err(`fatal: cannot mkdir ${rest[0]}: File exists`)] };
+    if (!node && !ensureDir(state.fs, dir)) return { state, output: [err(`fatal: cannot mkdir ${rest[0]}`)] };
+    const gitDir = (dir === "/" ? "" : dir) + "/.git/";
+    if (has(state.repos, dir)) return { state, output: [muted(`Reinitialized existing Git repository in ${gitDir}`)] };
+    state.repos[dir] = newRepo(dir);
+    return {
+        state,
+        output: [ok(`Initialized empty Git repository in ${gitDir}`)],
+        highlight: { kind: "git-init", path: dir },
+    };
+};
+
+GIT_HANDLERS.status = withRepo((state, repo) => {
     const s = gitStatus(state.fs, repo);
     const lines = [];
     const branch = currentBranch(repo);
     lines.push(out(branch ? `On branch ${branch}` : shortRef(repo)));
-    if (s.staged.length === 0 && s.unstaged.length === 0 && s.untracked.length === 0) {
-        lines.push(muted("nothing to commit, working tree clean"));
-    } else {
-        if (s.staged.length) {
-            lines.push(muted(""));
-            lines.push(out("Changes to be committed:"));
-            s.staged.forEach((f) =>
-                lines.push({ kind: "success", text: `  ${f.kind}:   ${f.path}` }),
-            );
+    if (repo.merging) {
+        if (s.unmerged.length) {
+            lines.push(del("You have unmerged paths."));
+            lines.push(muted('  (fix conflicts and run "git commit")'));
+        } else {
+            lines.push(ok("All conflicts fixed but you are still merging."));
+            lines.push(muted('  (use "git commit" to conclude merge)'));
         }
-        if (s.unstaged.length) {
-            lines.push(muted(""));
-            lines.push(out("Changes not staged for commit:"));
-            s.unstaged.forEach((f) =>
-                lines.push(del(`  ${f.kind}:   ${f.path}`)),
-            );
-        }
-        if (s.untracked.length) {
-            lines.push(muted(""));
-            lines.push(out("Untracked files:"));
-            s.untracked.forEach((p) => lines.push(del(`  ${p}`)));
-        }
+        lines.push(muted('  (use "git merge --abort" to abort the merge)'));
     }
+    const clean = !s.staged.length && !s.unstaged.length && !s.untracked.length && !s.unmerged.length;
+    if (clean) {
+        if (!repo.merging) lines.push(muted("nothing to commit, working tree clean"));
+        return { state, output: lines };
+    }
+    const section = (title, items, fmt) => {
+        if (!items.length) return;
+        lines.push(muted(""));
+        lines.push(out(title));
+        items.forEach((f) => lines.push(fmt(f)));
+    };
+    section("Changes to be committed:", s.staged, (f) => ok(`  ${f.kind}:   ${f.path}`));
+    section("Unmerged paths:", s.unmerged, (f) => del(`  ${f.kind}:   ${f.path}`));
+    section("Changes not staged for commit:", s.unstaged, (f) => del(`  ${f.kind}:   ${f.path}`));
+    section("Untracked files:", s.untracked, (p) => del(`  ${p}`));
     return { state, output: lines };
-};
+});
 
-GIT_HANDLERS.add = (state, args) => {
-    const repo = requireRepo(state);
-    if (!repo) return { state, output: [err("fatal: not a git repository")] };
-    if (args.length === 0) return { state, output: [err("Nothing specified. (try `git add .`)")] };
-    const r = { added: 0 };
+GIT_HANDLERS.add = withRepo((state, repo, args) => {
+    if (args.length === 0) return { state, output: [err("Nothing specified, nothing added. (try `git add .`)")] };
+    let added = 0;
+    const resolved = [];
     for (const a of args) {
         const target = a === "-A" || a === "--all" ? "-A" : repoPath(state, repo, a);
         const one = gitAdd(state.fs, repo, target);
         if (one.error) return { state, output: [err(one.error)] };
-        r.added += one.added;
+        added += one.added;
+        resolved.push(...one.resolved);
     }
-    if (r.added === 0) {
-        return {
-            state,
-            output: [muted("nothing to stage — working tree matches index")],
-        };
+    if (added === 0 && resolved.length === 0) {
+        return { state, output: [muted("nothing to stage — working tree matches index")] };
     }
-    return {
-        state,
-        output: [ok(`✓ staged ${r.added} file${r.added !== 1 ? "s" : ""}`)],
-        highlight: { kind: "git-add", count: r.added },
-    };
-};
+    const lines = [];
+    if (added) lines.push(ok(`✓ staged ${added} file${added !== 1 ? "s" : ""}`));
+    if (resolved.length) {
+        lines.push(ok(`✓ marked as resolved: ${resolved.join(", ")}`));
+        if (repo.merging && repo.merging.conflicts.length === 0)
+            lines.push(muted("All conflicts fixed — run `git commit` to finish the merge."));
+    }
+    return { state, output: lines, highlight: { kind: "git-add", count: added } };
+});
 
-GIT_HANDLERS.commit = (state, args) => {
-    const repo = requireRepo(state);
-    if (!repo) return { state, output: [err("fatal: not a git repository")] };
-    const amend = args.includes("--amend");
-    let msg = "";
-    let all = args.includes("--all");
-    for (let i = 0; i < args.length; i++) {
-        // short flags may be combined: -m, -a, -am
-        if (/^-[a-zA-Z]+$/.test(args[i])) {
-            if (args[i].includes("a")) all = true;
-            if (args[i].endsWith("m") && args[i + 1] && !msg) {
-                msg = args[i + 1];
-                i++;
-            }
-        }
-    }
-    if (!msg && amend) {
-        // Keep previous message if no -m
-        const head = headCommit(repo);
-        msg = head ? repo.commits[head]?.message || "" : "";
-    }
-    if (!msg) return { state, output: [err("Please provide a message: git commit -m \"your message\"")] };
-    if (all) stageTracked(state.fs, repo);
-    const r = gitCommit(repo, msg, { amend, allowEmpty: args.includes("--allow-empty") });
-    if (r.error) return { state, output: [err(r.error)] };
+// Shared by `git commit` and `git merge --continue`.
+const commitAndReport = (state, repo, msg, opts = {}) => {
+    const r = gitCommit(repo, msg, opts);
+    if (r.error) return { state, output: errLines(r.error) };
     return {
         state,
         output: [ok(`[${currentBranch(repo) || "detached HEAD"} ${r.hash}] ${r.amended ? "(amended) " : ""}${r.message}`)],
@@ -569,9 +644,33 @@ GIT_HANDLERS.commit = (state, args) => {
     };
 };
 
-GIT_HANDLERS.log = (state, args = []) => {
-    const repo = requireRepo(state);
-    if (!repo) return { state, output: [err("fatal: not a git repository")] };
+GIT_HANDLERS.commit = withRepo((state, repo, args) => {
+    const amend = args.includes("--amend");
+    let msg = "";
+    let all = args.includes("--all");
+    for (let i = 0; i < args.length; i++) {
+        const a = args[i];
+        if (a.startsWith("--message=")) msg = a.slice("--message=".length);
+        else if (a === "--message" && args[i + 1] !== undefined) msg = args[++i];
+        else if (/^-[a-zA-Z]+$/.test(a)) {
+            // short flags may be combined: -m, -a, -am
+            if (a.includes("a")) all = true;
+            if (a.endsWith("m") && args[i + 1] !== undefined && !msg) msg = args[++i];
+        }
+    }
+    if (!msg && amend) {
+        // Keep previous message if no -m
+        const head = headCommit(repo);
+        msg = head ? repo.commits[head]?.message || "" : "";
+    }
+    // Concluding a merge: git offers the prepared "Merge branch ..." message.
+    if (!msg && repo.merging) msg = repo.merging.message;
+    if (!msg) return { state, output: [err('Please provide a message: git commit -m "your message"')] };
+    if (all) stageTracked(state.fs, repo);
+    return commitAndReport(state, repo, msg, { amend, allowEmpty: args.includes("--allow-empty") });
+});
+
+GIT_HANDLERS.log = withRepo((state, repo, args) => {
     // Supported: --oneline, -n <N>, -<N>, --max-count=<N>. Other flags
     // (e.g. --graph, --all) are accepted and ignored.
     let oneline = false;
@@ -591,43 +690,45 @@ GIT_HANDLERS.log = (state, args = []) => {
             const refs = [];
             for (const [name, hash] of Object.entries(repo.branches)) {
                 if (hash !== c.hash) continue;
-                refs.push(
-                    repo.HEAD.type === "branch" && repo.HEAD.ref === name
-                        ? `HEAD -> ${name}`
-                        : name,
-                );
+                refs.push(repo.HEAD.type === "branch" && repo.HEAD.ref === name ? `HEAD -> ${name}` : name);
             }
             if (repo.HEAD.type === "detached" && head === c.hash) refs.unshift("HEAD");
-            for (const [name, hash] of Object.entries(repo.tags || {}))
-                if (hash === c.hash) refs.push(`tag: ${name}`);
-            const firstLine = String(c.message || "").split("\n")[0];
-            return out(`${c.hash}${refs.length ? ` (${refs.join(", ")})` : ""} ${firstLine}`);
+            for (const [name, hash] of Object.entries(repo.remoteRefs || {})) if (hash === c.hash) refs.push(name);
+            for (const [name, hash] of Object.entries(repo.tags || {})) if (hash === c.hash) refs.push(`tag: ${name}`);
+            const first = String(c.message || "").split("\n")[0];
+            return out(`${c.hash}${refs.length ? ` (${refs.join(", ")})` : ""} ${first}`);
         });
         return { state, output: lines };
     }
+    // Only the fields the Terminal shows: lines are persisted, file contents aren't needed.
     return {
         state,
-        output: commits.map((c) => ({ kind: "log-commit", commit: c })),
+        output: commits.map((c) => ({
+            kind: "log-commit",
+            commit: { hash: c.hash, branch: c.branch, author: c.author, date: c.date, message: c.message },
+        })),
     };
-};
+});
 
-GIT_HANDLERS.branch = (state, args) => {
-    const repo = requireRepo(state);
-    if (!repo) return { state, output: [err("fatal: not a git repository")] };
+GIT_HANDLERS.branch = withRepo((state, repo, args) => {
     const { flags, rest } = splitFlags(args);
-    if (flags.has("-d") || flags.has("-D")) {
+    if (flags.has("-d") || flags.has("-D") || flags.has("--delete")) {
         if (!rest[0]) return { state, output: [err("fatal: branch name required")] };
-        const r = gitBranch(repo, rest[0], { delete: true });
-        if (r.error) return { state, output: [err(r.error)] };
-        return { state, output: [ok(`Deleted branch ${r.deleted}.`)] };
+        const force = flags.has("-D") || flags.has("-f") || flags.has("--force");
+        const lines = [];
+        for (const name of rest) {
+            const r = gitBranch(repo, name, { delete: true, force });
+            if (r.error) return { state, output: [...lines, ...errLines(r.error)] };
+            lines.push(ok(`Deleted branch ${r.deleted} (was ${r.hash}).`));
+        }
+        return { state, output: lines };
     }
     if (flags.has("-m") || flags.has("-M")) {
         // git branch -m <new>  OR  git branch -m <old> <new>
         const [a, b] = rest;
-        const from = b ? a : currentBranch(repo);
-        const to = b || a;
-        const r = gitBranch(repo, to, { rename: true, from });
-        if (r.error) return { state, output: [err(r.error)] };
+        if (!a) return { state, output: [err("fatal: branch name required")] };
+        const r = gitBranch(repo, b || a, { rename: true, from: b ? a : currentBranch(repo) });
+        if (r.error) return { state, output: errLines(r.error) };
         return {
             state,
             output: [ok(`Renamed branch '${r.renamed.from}' to '${r.renamed.to}'`)],
@@ -636,40 +737,51 @@ GIT_HANDLERS.branch = (state, args) => {
     }
     if (rest.length === 0) {
         const r = gitBranch(repo, null);
-        const lines = [];
         if (r.list.length === 0 && repo.HEAD.type === "branch")
-            return { state, output: [muted(`(no commits yet on branch '${repo.HEAD.ref}' — it appears after your first commit)`)] };
-        if (repo.HEAD.type === "detached")
-            lines.push({ kind: "success", text: `* (${shortRef(repo)})` });
-        r.list.forEach((b) => lines.push(
-            b.active
-                ? { kind: "success", text: `* ${b.name}` }
-                : out(`  ${b.name}`),
-        ));
+            return {
+                state,
+                output: [muted(`(no commits yet on branch '${repo.HEAD.ref}' — it appears after your first commit)`)],
+            };
+        const lines = [];
+        if (repo.HEAD.type === "detached") lines.push(ok(`* (${shortRef(repo)})`));
+        r.list.forEach((b) => lines.push(b.active ? ok(`* ${b.name}`) : out(`  ${b.name}`)));
         return { state, output: lines };
     }
     const r = gitBranch(repo, rest[0], { start: rest[1] });
-    if (r.error) return { state, output: [err(r.error)] };
+    if (r.error) return { state, output: errLines(r.error) };
     return {
         state,
         output: [ok(`Created branch '${r.created}'`)],
         highlight: { kind: "git-branch", name: r.created },
     };
-};
+});
 
-const checkoutImpl = (state, args, asSwitch) => {
-    const repo = requireRepo(state);
-    if (!repo) return { state, output: [err("fatal: not a git repository")] };
+const checkoutImpl = (state, repo, args, asSwitch) => {
     const { flags, rest } = splitFlags(args);
-    const newBranch = flags.has("-b") || flags.has("-c");
+    const newBranch = flags.has("-b") || flags.has("-c") || flags.has("-B") || flags.has("-C");
     const target = rest[0];
-    if (!target) return { state, output: [err("missing branch / commit")] };
+    if (!target) return { state, output: [err("fatal: missing branch or commit argument")] };
     // `git checkout -- <file>` / `git checkout <file>`: discard working-tree changes
-    if (!asSwitch && !newBranch && (flags.has("--") || (!repo.branches[target] && getNode(state.fs, normalizePath(state.cwd, target)) && !repo.commits[target]))) {
-        return GIT_HANDLERS.restore(state, rest);
+    if (!asSwitch && !newBranch) {
+        const looksLikePath =
+            !has(repo.branches, target) &&
+            !resolveRev(repo, target) &&
+            getNode(state.fs, normalizePath(state.cwd, expandTilde(target)));
+        if (flags.has("--") || looksLikePath) return GIT_HANDLERS.restore(state, rest);
     }
+    const blocked = blockedByMerge(state, repo, asSwitch ? "switch" : "checkout");
+    if (blocked) return blocked;
+    if (asSwitch && !newBranch && !flags.has("--detach") && !has(repo.branches, target))
+        return {
+            state,
+            output: [
+                err(`fatal: invalid reference: ${target}`),
+                muted("hint: `git switch` expects a branch. Use `git switch --detach <commit>` for a commit,"),
+                muted("hint: or `git switch -c <name>` to create a new branch."),
+            ],
+        };
     const r = gitCheckout(state.fs, repo, target, { newBranch, start: newBranch ? rest[1] : undefined });
-    if (r.error) return { state, output: [err(r.error)] };
+    if (r.error) return { state, output: errLines(r.error) };
     if (r.detached)
         return {
             state,
@@ -686,87 +798,105 @@ const checkoutImpl = (state, args, asSwitch) => {
     };
 };
 
-GIT_HANDLERS.checkout = (state, args) => checkoutImpl(state, args, false);
-GIT_HANDLERS.switch = (state, args) => {
-    // git switch -c creates new branch
-    const a = [...args];
-    if (a.includes("-c")) a[a.indexOf("-c")] = "-b";
-    return checkoutImpl(state, a, true);
-};
+GIT_HANDLERS.checkout = withRepo((state, repo, args) => checkoutImpl(state, repo, args, false));
+GIT_HANDLERS.switch = withRepo((state, repo, args) => checkoutImpl(state, repo, args, true));
 
-GIT_HANDLERS.merge = (state, args) => {
-    const repo = requireRepo(state);
-    if (!repo) return { state, output: [err("fatal: not a git repository")] };
-    if (!args[0]) return { state, output: [err("usage: git merge <branch>")] };
-    const r = gitMerge(state.fs, repo, args[0]);
-    if (r.error) return { state, output: [err(r.error)] };
+GIT_HANDLERS.merge = withRepo((state, repo, args) => {
+    const { flags, rest } = splitFlags(args);
+    if (flags.has("--abort")) {
+        const r = gitMergeAbort(state.fs, repo);
+        if (r.error) return { state, output: errLines(r.error) };
+        return {
+            state,
+            output: [ok(`Merge aborted. HEAD is back at ${r.hash}.`)],
+            highlight: { kind: "git-merge-abort", hash: r.hash },
+        };
+    }
+    if (flags.has("--continue")) {
+        if (!repo.merging) return { state, output: [err("fatal: There is no merge in progress (MERGE_HEAD missing).")] };
+        return commitAndReport(state, repo, repo.merging.message);
+    }
+    const blocked = blockedByMerge(state, repo, "merging");
+    if (blocked) return blocked;
+    if (!rest[0]) return { state, output: [err("usage: git merge <branch>  |  git merge --abort  |  git merge --continue")] };
+    const r = gitMerge(state.fs, repo, rest[0]);
+    if (r.error) return { state, output: errLines(r.error) };
+    if (r.conflicts) return conflictReport(state, r, rest[0]);
     if (r.alreadyUpToDate) return { state, output: [muted(r.message)] };
     return {
         state,
-        output: [ok(r.ff ? `Fast-forward to ${args[0]}` : `Merged branch '${r.merged}' into ${currentBranch(repo)} (${r.hash})`)],
-        highlight: { kind: "git-merge", branch: args[0] },
+        output: [ok(r.ff ? `Fast-forward to ${rest[0]}` : `Merged '${r.merged}' into ${shortRef(repo)} (${r.hash})`)],
+        highlight: { kind: "git-merge", branch: rest[0] },
     };
-};
+});
 
-GIT_HANDLERS.rebase = (state, args) => {
-    const repo = requireRepo(state);
-    if (!repo) return { state, output: [err("fatal: not a git repository")] };
-    if (!args[0]) return { state, output: [err("usage: git rebase <onto>")] };
-    const r = gitRebase(state.fs, repo, args[0]);
-    if (r.error) return { state, output: [err(r.error)] };
+GIT_HANDLERS.rebase = withRepo((state, repo, args) => {
+    const blocked = blockedByMerge(state, repo, "rebase");
+    if (blocked) return blocked;
+    const { rest } = splitFlags(args);
+    if (!rest[0]) return { state, output: [err("usage: git rebase <upstream>")] };
+    const r = gitRebase(state.fs, repo, rest[0]);
+    if (r.error) return { state, output: errLines(r.error) };
     if (r.upToDate) return { state, output: [muted(r.message)] };
-    return {
-        state,
-        output: [ok(r.ff ? `Fast-forward rebase onto ${args[0]}` : `Replayed ${r.count} commit(s) onto ${args[0]}`)],
-        highlight: { kind: "git-rebase", onto: args[0] },
-    };
-};
+    const lines = [ok(r.ff ? `Fast-forwarded ${currentBranch(repo)} to ${rest[0]}` : `Replayed ${r.count} commit(s) onto ${rest[0]}`)];
+    if (r.dropped) lines.push(muted(`(skipped ${r.dropped} merge or already-applied commit(s))`));
+    return { state, output: lines, highlight: { kind: "git-rebase", onto: rest[0] } };
+});
 
-GIT_HANDLERS.reset = (state, args) => {
-    const repo = requireRepo(state);
-    if (!repo) return { state, output: [err("fatal: not a git repository")] };
+GIT_HANDLERS.reset = withRepo((state, repo, args) => {
     const { flags, rest } = splitFlags(args);
     let mode = "--mixed";
     if (flags.has("--hard")) mode = "--hard";
     if (flags.has("--soft")) mode = "--soft";
     // `git reset [HEAD] <file>`: unstage paths, don't move HEAD
-    const paths =
-        rest[0] === "HEAD"
-            ? rest.slice(1)
-            : rest.filter((x) => repoPath(state, repo, x) in repo.staged && !repo.branches[x]);
-    if (mode === "--mixed" && paths.length) {
-        return GIT_HANDLERS.restore(state, ["--staged", ...paths]);
-    }
+    const isPath = (x) => {
+        if (resolveRev(repo, x)) return false;
+        const rp = repoPath(state, repo, x);
+        return has(repo.staged, rp) || has(repo.tracked, rp) || !!getNode(state.fs, normalizePath(state.cwd, expandTilde(x)));
+    };
+    const paths = flags.has("--") ? rest.slice(rest[0] === "HEAD" ? 1 : 0) : rest[0] === "HEAD" ? rest.slice(1) : rest.filter(isPath);
+    if (mode === "--mixed" && paths.length) return GIT_HANDLERS.restore(state, ["--staged", ...paths]);
     const target = rest[0] || "HEAD";
     const r = gitReset(state.fs, repo, target, mode);
-    if (r.error) return { state, output: [err(r.error)] };
+    if (r.error) return { state, output: errLines(r.error) };
     return {
         state,
         output: [ok(`HEAD is now at ${r.hash} (${mode})`)],
         highlight: { kind: "git-reset", target, mode },
     };
+});
+
+const pickLike = (op, fn, verb) =>
+    withRepo((state, repo, args) => {
+        const blocked = blockedByMerge(state, repo, op);
+        if (blocked) return blocked;
+        const { rest } = splitFlags(args);
+        if (!rest[0]) return { state, output: [err(`usage: git ${op} <commit>`)] };
+        const r = fn(state.fs, repo, rest[0]);
+        if (r.error) return { state, output: errLines(r.error) };
+        return {
+            state,
+            output: [ok(`${verb} ${r.picked} as ${r.hash}`)],
+            highlight: { kind: `git-${op}`, target: rest[0], picked: r.picked, hash: r.hash },
+        };
+    });
+
+GIT_HANDLERS.revert = pickLike("revert", gitRevert, "Reverted");
+GIT_HANDLERS["cherry-pick"] = pickLike("cherry-pick", gitCherryPick, "Picked");
+
+// `git push [<remote> [<branch>]]` (also `branch:branch` and `HEAD`)
+const remoteArgs = (repo, rest) => {
+    const remote = rest[0];
+    let branch = rest[1] ? rest[1].split(":")[0] : null;
+    if (branch === "HEAD") branch = currentBranch(repo);
+    return { remote, branch };
 };
 
-GIT_HANDLERS.revert = (state, args) => {
-    const repo = requireRepo(state);
-    if (!repo) return { state, output: [err("fatal: not a git repository")] };
-    if (!args[0]) return { state, output: [err("usage: git revert <commit>")] };
-    const r = gitRevert(state.fs, repo, args[0]);
-    if (r.error) return { state, output: [err(r.error)] };
-    return {
-        state,
-        output: [ok(`Reverted commit ${args[0]} as ${r.hash}`)],
-        highlight: { kind: "git-revert", target: args[0] },
-    };
-};
-
-GIT_HANDLERS.push = (state, args) => {
-    const repo = requireRepo(state);
-    if (!repo) return { state, output: [err("fatal: not a git repository")] };
+GIT_HANDLERS.push = withRepo((state, repo, args) => {
     const { flags, rest } = splitFlags(args); // -u / --set-upstream are no-ops
     const force = flags.has("--force") || flags.has("-f") || flags.has("--force-with-lease");
-    const branch = rest[1] || currentBranch(repo);
-    const r = gitPush(repo, branch, { force });
+    const { remote, branch } = remoteArgs(repo, rest);
+    const r = gitPush(repo, branch, { force, remote });
     if (r.rejected)
         return {
             state,
@@ -788,7 +918,7 @@ GIT_HANDLERS.push = (state, args) => {
             ],
             failed: true,
         };
-    if (r.error) return { state, output: [err(r.error)] };
+    if (r.error) return { state, output: errLines(r.error) };
     return {
         state,
         output: [
@@ -799,54 +929,46 @@ GIT_HANDLERS.push = (state, args) => {
         ],
         highlight: { kind: "git-push", branch: r.branch },
     };
-};
+});
 
-GIT_HANDLERS.fetch = (state, args) => {
-    const repo = requireRepo(state);
-    if (!repo) return { state, output: [err("fatal: not a git repository")] };
-    const r = gitFetch(repo);
+GIT_HANDLERS.fetch = withRepo((state, repo, args) => {
+    const { rest } = splitFlags(args);
+    const r = gitFetch(repo, rest[0]);
+    if (r.error) return { state, output: errLines(r.error) };
     const branch = currentBranch(repo);
     const ab = branch ? remoteAheadBehind(repo, branch) : null;
     const lines = [
         ok(`Fetched ${r.branches.length} branch(es) from origin (+${r.newCommits} new commit${r.newCommits !== 1 ? "s" : ""})`),
     ];
     if (ab && ab.hasRemote && ab.hasLocal) {
-        lines.push(
-            muted(
-                `Branch '${branch}' is ${ab.ahead} ahead, ${ab.behind} behind origin/${branch}`,
-            ),
-        );
+        lines.push(muted(`Branch '${branch}' is ${ab.ahead} ahead, ${ab.behind} behind origin/${branch}`));
     }
     return { state, output: lines, highlight: { kind: "git-fetch" } };
-};
+});
 
-GIT_HANDLERS.pull = (state, args) => {
-    const repo = requireRepo(state);
-    if (!repo) return { state, output: [err("fatal: not a git repository")] };
+GIT_HANDLERS.pull = withRepo((state, repo, args) => {
+    const blocked = blockedByMerge(state, repo, "pull");
+    if (blocked) return blocked;
     const { rest } = splitFlags(args);
-    const r = gitPull(state.fs, repo, rest[1] || null);
-    if (r.error) return { state, output: [err(r.error)] };
+    const { remote, branch } = remoteArgs(repo, rest);
+    const r = gitPull(state.fs, repo, branch, remote);
+    if (r.error) return { state, output: errLines(r.error) };
+    if (r.conflicts) return conflictReport(state, r, "origin/" + (branch || currentBranch(repo)));
     return {
         state,
-        output: [
-            ok(
-                r.message ||
-                    (r.ff
-                        ? "Fast-forwarded from origin"
-                        : `Merged origin into ${currentBranch(repo)}`),
-            ),
-        ],
+        output: [ok(r.message || (r.ff ? "Fast-forwarded from origin" : `Merged origin into ${currentBranch(repo)}`))],
         highlight: { kind: "git-pull" },
     };
-};
+});
 
 GIT_HANDLERS.clone = (state, args) => {
-    if (!args[0]) return { state, output: [err("usage: git clone <url>")] };
-    const r = gitClone(state.fs, args[0], state.cwd);
-    if (r.error) return { state, output: [err(r.error)] };
-    const newRepos = { ...state.repos, [r.repo.path]: r.repo };
+    const { rest } = splitFlags(args);
+    if (!rest[0]) return { state, output: [err("usage: git clone <url>")] };
+    const r = gitClone(state.fs, rest[0], state.cwd);
+    if (r.error) return { state, output: errLines(r.error) };
+    state.repos[r.repo.path] = r.repo;
     return {
-        state: { ...state, repos: newRepos },
+        state,
         output: [
             muted(`Cloning into '${r.name}'...`),
             muted(`remote: counting objects... done`),
@@ -857,47 +979,40 @@ GIT_HANDLERS.clone = (state, args) => {
     };
 };
 
-// ---- NEW GIT COMMANDS ----
-
-GIT_HANDLERS.tag = (state, args) => {
-    const repo = requireRepo(state);
-    if (!repo) return { state, output: [err("fatal: not a git repository")] };
+GIT_HANDLERS.tag = withRepo((state, repo, args) => {
     // drop the value of -m "<message>" (annotated tags are stored like lightweight ones)
     const mi = args.findIndex((a) => a === "-m");
     const { flags, rest } = splitFlags(mi === -1 ? args : [...args.slice(0, mi), ...args.slice(mi + 2)]);
     if (flags.has("-d")) {
         if (!rest[0]) return { state, output: [err("usage: git tag -d <tagname>")] };
         const r = gitTag(repo, rest[0], null, { delete: true });
-        if (r.error) return { state, output: [err(r.error)] };
+        if (r.error) return { state, output: errLines(r.error) };
         return { state, output: [ok(`Deleted tag '${r.deleted}'`)] };
     }
     if (rest.length === 0 || flags.has("-l") || flags.has("--list")) {
         const r = gitTag(repo, null);
         if (r.list.length === 0) return { state, output: [muted("(no tags)")] };
-        return {
-            state,
-            output: r.list.map((t) => out(`${t.name}  ${t.hash}`)),
-        };
+        return { state, output: r.list.map((t) => out(`${t.name}  ${t.hash}`)) };
     }
     const r = gitTag(repo, rest[0], rest[1] || null);
-    if (r.error) return { state, output: [err(r.error)] };
+    if (r.error) return { state, output: errLines(r.error) };
     return {
         state,
         output: [ok(`Created tag '${r.created}' on ${r.hash}`)],
         highlight: { kind: "git-tag", name: r.created },
     };
-};
+});
 
-GIT_HANDLERS.stash = (state, args) => {
-    const repo = requireRepo(state);
-    if (!repo) return { state, output: [err("fatal: not a git repository")] };
+GIT_HANDLERS.stash = withRepo((state, repo, args) => {
     const sub = args[0];
     if (!sub || sub === "push" || sub === "save" || sub.startsWith("-")) {
+        const blocked = blockedByMerge(state, repo, "stash");
+        if (blocked) return blocked;
         const message = args.includes("-m")
             ? args[args.indexOf("-m") + 1] || "WIP"
             : args.filter((a, i) => !(i === 0 && (a === "push" || a === "save")) && !a.startsWith("-")).join(" ") || "WIP";
         const r = gitStash(state.fs, repo, message);
-        if (r.error) return { state, output: [err(r.error)] };
+        if (r.error) return { state, output: errLines(r.error) };
         return {
             state,
             output: [ok(`Saved working directory and index state ${r.id}`)],
@@ -905,8 +1020,10 @@ GIT_HANDLERS.stash = (state, args) => {
         };
     }
     if (sub === "pop") {
+        const blocked = blockedByMerge(state, repo, "stash pop");
+        if (blocked) return blocked;
         const r = gitStashPop(state.fs, repo);
-        if (r.error) return { state, output: [err(r.error)] };
+        if (r.error) return { state, output: errLines(r.error) };
         return {
             state,
             output: [ok(`Applied stash ${r.id}`)],
@@ -917,136 +1034,86 @@ GIT_HANDLERS.stash = (state, args) => {
         if (repo.stashes.length === 0) return { state, output: [muted("(no stash)")] };
         return {
             state,
-            output: repo.stashes.map((s, i) =>
-                out(`stash@{${i}}: WIP on ${s.branch || "(no branch)"}: ${s.message}`),
-            ),
+            output: repo.stashes.map((s, i) => out(`stash@{${i}}: WIP on ${s.branch || "(no branch)"}: ${s.message}`)),
         };
     }
     if (sub === "clear") {
         repo.stashes = [];
         return { state, output: [ok("Cleared stash entries.")] };
     }
-    return { state, output: [err(`stash: unknown subcommand '${sub}'`)] };
-};
+    return { state, output: [err(`error: unknown subcommand: '${sub}' (try push, pop, list or clear)`)] };
+});
 
-GIT_HANDLERS["cherry-pick"] = (state, args) => {
-    const repo = requireRepo(state);
-    if (!repo) return { state, output: [err("fatal: not a git repository")] };
-    if (!args[0]) return { state, output: [err("usage: git cherry-pick <commit>")] };
-    const r = gitCherryPick(state.fs, repo, args[0]);
-    if (r.error) return { state, output: [err(r.error)] };
-    return {
-        state,
-        output: [ok(`Picked ${r.picked} as ${r.hash}`)],
-        highlight: { kind: "git-cherry-pick", picked: r.picked, hash: r.hash },
-    };
-};
-
-GIT_HANDLERS.reflog = (state) => {
-    const repo = requireRepo(state);
-    if (!repo) return { state, output: [err("fatal: not a git repository")] };
+GIT_HANDLERS.reflog = withRepo((state, repo) => {
     const entries = gitReflog(repo);
     if (entries.length === 0) return { state, output: [muted("(empty reflog)")] };
-    const lines = entries.map((e, i) => {
-        const hash = e.newHash ? e.newHash.slice(0, 7) : "-------";
-        return out(`${hash} HEAD@{${i}}: ${e.op}: ${e.message || ""}`);
-    });
-    return { state, output: lines };
-};
+    return {
+        state,
+        output: entries.map((e, i) => {
+            const hash = e.newHash ? e.newHash.slice(0, 7) : "-------";
+            return out(`${hash} HEAD@{${i}}: ${e.op}: ${e.message || ""}`);
+        }),
+    };
+});
 
-GIT_HANDLERS.show = (state, args) => {
-    const repo = requireRepo(state);
-    if (!repo) return { state, output: [err("fatal: not a git repository")] };
+GIT_HANDLERS.show = withRepo((state, repo, args) => {
     const r = gitShow(repo, args[0]);
-    if (r.error) return { state, output: [err(r.error)] };
+    if (r.error) return { state, output: errLines(r.error) };
     const c = r.commit;
     const lines = [
-        { kind: "out", text: `commit ${c.hash}` },
+        out(`commit ${c.hash}`),
+        ...(c.parents.length > 1 ? [muted(`Merge: ${c.parents.join(" ")}`)] : []),
         muted(`Author: ${c.author}`),
         muted(`Date:   ${new Date(c.date).toLocaleString()}`),
         out(""),
-        out(`    ${c.message}`),
+        ...String(c.message).split("\n").map((l) => out(`    ${l}`)),
         out(""),
+        ...renderPatch(r.changes),
     ];
-    for (const ch of r.changes) {
-        const stats = diffStats(ch.before, ch.after);
-        lines.push({ kind: "success", text: `--- ${ch.path}  +${stats.adds} -${stats.dels}` });
-        const hunks = diffHunks(ch.before, ch.after, 2);
-        for (const h of hunks) {
-            lines.push(muted(`@@ -${h.oldStart} +${h.newStart} @@`));
-            for (const l of h.lines) {
-                if (l.type === "add") lines.push({ kind: "success", text: "+ " + l.text });
-                else if (l.type === "del") lines.push(del("- " + l.text));
-                else lines.push(muted("  " + l.text));
-            }
-        }
-    }
     return { state, output: lines, highlight: { kind: "git-show", hash: c.hash } };
-};
+});
 
-GIT_HANDLERS.diff = (state, args) => {
-    const repo = requireRepo(state);
-    if (!repo) return { state, output: [err("fatal: not a git repository")] };
+GIT_HANDLERS.diff = withRepo((state, repo, args) => {
     const { flags, rest } = splitFlags(args);
-    let opts = {};
+    const afterDashes = flags.has("--");
     // Leading args that name commits are revisions; the rest are paths.
-    const isRev = (x) =>
-        x === "HEAD" || /[~^]/.test(x) || repo.branches[x] || repo.tags?.[x] || repo.commits[x] || repo.remoteRefs?.[x];
     const revs = [];
-    while (revs.length < 2 && rest.length && isRev(rest[0]) && !getNode(state.fs, normalizePath(state.cwd, rest[0])))
+    while (
+        !afterDashes &&
+        revs.length < 2 &&
+        rest.length &&
+        resolveRev(repo, rest[0]) &&
+        !getNode(state.fs, normalizePath(state.cwd, expandTilde(rest[0])))
+    )
         revs.push(rest.shift());
+    let opts = {};
     if (flags.has("--staged") || flags.has("--cached")) opts = { staged: true };
     else if (revs.length === 2) opts = { between: [revs[0], revs[1]] };
     else if (revs.length === 1) opts = { between: [revs[0], null] };
     if (rest.length) opts.paths = rest.map((p) => repoPath(state, repo, p));
     const pairs = computeDiffPairs(state.fs, repo, opts);
     if (pairs.length === 0) return { state, output: [muted("(no changes)")] };
-    const lines = [];
-    for (const p of pairs) {
-        const stats = diffStats(p.before, p.after);
-        lines.push({ kind: "success", text: `--- ${p.path}  +${stats.adds} -${stats.dels}` });
-        const hunks = diffHunks(p.before, p.after, 2);
-        for (const h of hunks) {
-            lines.push(muted(`@@ -${h.oldStart} +${h.newStart} @@`));
-            for (const l of h.lines) {
-                if (l.type === "add") lines.push({ kind: "success", text: "+ " + l.text });
-                else if (l.type === "del") lines.push(del("- " + l.text));
-                else lines.push(muted("  " + l.text));
-            }
-        }
-    }
-    return { state, output: lines, highlight: { kind: "git-diff", count: pairs.length } };
-};
+    return { state, output: renderPatch(pairs), highlight: { kind: "git-diff", count: pairs.length } };
+});
 
-GIT_HANDLERS.restore = (state, args) => {
-    const repo = requireRepo(state);
-    if (!repo) return { state, output: [err("fatal: not a git repository")] };
+GIT_HANDLERS.restore = withRepo((state, repo, args) => {
     const { flags, rest } = splitFlags(args);
-    const path = rest[0];
-    if (!path) return { state, output: [err("usage: git restore [--staged] <path>")] };
-    const r = { unstaged: 0, restored: 0 };
+    if (!rest[0]) return { state, output: [err("usage: git restore [--staged] <path>")] };
+    const staged = flags.has("--staged") || flags.has("-S");
+    let count = 0;
     for (const p of rest) {
-        const one = gitRestore(state.fs, repo, repoPath(state, repo, p), { staged: flags.has("--staged") });
-        if (one.error) return { state, output: [err(one.error)] };
-        r.unstaged += one.unstaged || 0;
-        r.restored += one.restored || 0;
+        const one = gitRestore(state.fs, repo, repoPath(state, repo, p), { staged });
+        if (one.error) return { state, output: errLines(one.error) };
+        count += (staged ? one.unstaged : one.restored) || 0;
     }
     return {
         state,
-        output: [
-            ok(
-                flags.has("--staged")
-                    ? `Unstaged ${r.unstaged} change(s)`
-                    : `Restored ${r.restored} file(s)`,
-            ),
-        ],
-        highlight: { kind: "git-restore", path },
+        output: [ok(staged ? `Unstaged ${count} change(s)` : `Restored ${count} file(s)`)],
+        highlight: { kind: "git-restore", path: rest[0] },
     };
-};
+});
 
-GIT_HANDLERS.rm = (state, args) => {
-    const repo = requireRepo(state);
-    if (!repo) return { state, output: [err("fatal: not a git repository")] };
+GIT_HANDLERS.rm = withRepo((state, repo, args) => {
     const { flags, rest } = splitFlags(args);
     if (!rest[0]) return { state, output: [err("usage: git rm [--cached] [-r] <file>")] };
     const lines = [];
@@ -1055,79 +1122,61 @@ GIT_HANDLERS.rm = (state, args) => {
             cached: flags.has("--cached"),
             recursive: flags.has("-r"),
         });
-        if (r.error) return { state, output: [...lines, err(r.error)] };
+        if (r.error) return { state, output: [...lines, ...errLines(r.error)] };
         lines.push(ok(`rm '${p}' (${r.removed} file(s))`));
     }
-    return {
-        state,
-        output: lines,
-        highlight: { kind: "git-rm", path: rest[0] },
-    };
-};
+    return { state, output: lines, highlight: { kind: "git-rm", path: rest[0] } };
+});
 
-GIT_HANDLERS.mv = (state, args) => {
-    const repo = requireRepo(state);
-    if (!repo) return { state, output: [err("fatal: not a git repository")] };
-    if (args.length < 2) return { state, output: [err("usage: git mv <src> <dst>")] };
-    const r = gitMv(state.fs, repo, repoPath(state, repo, args[0]), repoPath(state, repo, args[1]));
-    if (r.error) return { state, output: [err(r.error)] };
-    return {
-        state,
-        output: [ok(`Renamed ${args[0]} -> ${args[1]}`)],
-        highlight: { kind: "git-mv" },
-    };
-};
+GIT_HANDLERS.mv = withRepo((state, repo, args) => {
+    const { rest } = splitFlags(args);
+    if (rest.length < 2) return { state, output: [err("usage: git mv <src> <dst>")] };
+    const r = gitMv(state.fs, repo, repoPath(state, repo, rest[0]), repoPath(state, repo, rest[1]));
+    if (r.error) return { state, output: errLines(r.error) };
+    return { state, output: [ok(`Renamed ${rest[0]} -> ${rest[1]}`)], highlight: { kind: "git-mv" } };
+});
 
-GIT_HANDLERS.remote = (state, args) => {
-    const repo = requireRepo(state);
-    if (!repo) return { state, output: [err("fatal: not a git repository")] };
+GIT_HANDLERS.remote = withRepo((state, repo, args) => {
     const r = gitRemote(repo, args);
-    if (r.error) return { state, output: [err(r.error)] };
-    if (r.list)
+    if (r.error) return { state, output: errLines(r.error) };
+    if (r.list) {
+        if (!r.list.length) return { state, output: [muted("(no remotes — add one with `git remote add origin <url>`)")] };
+        const verbose = args[0] === "-v" || args[0] === "--verbose";
         return {
             state,
-            output: r.list.flatMap((rm) => [
-                out(`${rm.name}\t${rm.url} (fetch)`),
-                out(`${rm.name}\t${rm.url} (push)`),
-            ]),
+            output: verbose
+                ? r.list.flatMap((rm) => [out(`${rm.name}\t${rm.url} (fetch)`), out(`${rm.name}\t${rm.url} (push)`)])
+                : r.list.map((rm) => out(rm.name)),
         };
+    }
+    if (r.value !== undefined) return { state, output: [out(r.value)] };
     if (r.added) return { state, output: [ok(`Added remote '${r.added.name}' -> ${r.added.url}`)] };
+    if (r.updated) return { state, output: [ok(`Remote '${r.updated.name}' now points to ${r.updated.url}`)] };
     if (r.removed) return { state, output: [ok(`Removed remote '${r.removed}'`)] };
     return { state, output: [] };
-};
+});
 
-GIT_HANDLERS.config = (state, args) => {
-    const repo = requireRepo(state);
-    if (!repo) return { state, output: [err("fatal: not a git repository")] };
-    const { flags, rest } = splitFlags(args);
-    // Drop --global / --local (no-op in sim)
-    const filtered = rest.filter((x) => x !== "--global" && x !== "--local");
-    const r = gitConfig(repo, { flags, rest: filtered });
-    if (r.error) return { state, output: [err(r.error)] };
+GIT_HANDLERS.config = withRepo((state, repo, args) => {
+    const { flags, rest } = splitFlags(args); // --global / --local are no-ops here
+    const r = gitConfig(repo, { flags, rest });
+    if (r.error) return { state, output: errLines(r.error) };
     if (r.value !== undefined) return { state, output: [out(r.value)] };
     if (r.set) return { state, output: [ok(`Set ${r.set.key} = ${r.set.val}`)] };
     if (r.list)
         return {
             state,
-            output: [
-                out(`user.name=${r.list.user.name}`),
-                out(`user.email=${r.list.user.email}`),
-            ],
+            output: [out(`user.name=${r.list.user.name}`), out(`user.email=${r.list.user.email}`)],
         };
     return { state, output: [] };
-};
+});
 
 GIT_HANDLERS["--version"] = (state) => ({
     state,
     output: [out("git version 2.43.0 (GitNaadu simulated)")],
 });
-
 GIT_HANDLERS.version = GIT_HANDLERS["--version"];
-GIT_HANDLERS.help = (state) => ({
-    state,
-    output: HELP_TEXT.map((l) => muted(l)),
-});
-
+GIT_HANDLERS.help = (state) => ({ state, output: HELP_TEXT.map((l) => muted(l)) });
+GIT_HANDLERS["--help"] = GIT_HANDLERS.help;
 
 export const tabComplete = (state, line) => {
     if (!line.trim()) return line;
@@ -1135,13 +1184,10 @@ export const tabComplete = (state, line) => {
     // included — is kept exactly as typed.
     const last = line.match(/(\S*)$/)[1];
     const head = line.slice(0, line.length - last.length);
-    // path completion: look at parent dir
-    const m = last.match(/^(.*\/)?([^\/]*)$/);
+    const m = last.match(/^(.*\/)?([^/]*)$/);
     const dirPart = m[1] || "";
     const filePart = m[2] || "";
-    const dirAbs = dirPart
-        ? normalizePath(state.cwd, expandTilde(dirPart))
-        : state.cwd;
+    const dirAbs = dirPart ? normalizePath(state.cwd, expandTilde(dirPart)) : state.cwd;
     const dirNode = getNode(state.fs, dirAbs);
     if (!dirNode || dirNode.type !== "dir") return line;
     const matches = listDir(dirNode).filter((it) => it.name.startsWith(filePart));
@@ -1151,8 +1197,8 @@ export const tabComplete = (state, line) => {
     }
     // common prefix
     let prefix = matches[0].name;
-    for (const m of matches) {
-        while (!m.name.startsWith(prefix) && prefix.length > 0) prefix = prefix.slice(0, -1);
+    for (const it of matches) {
+        while (!it.name.startsWith(prefix) && prefix.length > 0) prefix = prefix.slice(0, -1);
     }
     return head + dirPart + prefix;
 };

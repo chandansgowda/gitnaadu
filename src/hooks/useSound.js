@@ -103,8 +103,10 @@ export const soundForHighlight = (highlight) => {
     if (!highlight) return null;
     const k = highlight.kind;
     if (k === "git-commit" || k === "git-amend") return "commit";
+    if (k === "git-merge-conflict") return "error";
     if (k === "git-branch" || k === "git-checkout" || k === "git-merge" || k === "git-rebase")
         return "branch";
+    if (k === "git-merge-abort") return "pop";
     if (k === "git-init" || k === "git-clone" || k === "git-push" || k === "git-tag") return "success";
     if (k === "git-add" || k === "git-restore" || k === "git-stash" || k === "git-stash-pop") return "pop";
     return null;

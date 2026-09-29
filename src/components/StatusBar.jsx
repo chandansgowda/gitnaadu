@@ -55,8 +55,16 @@ export const StatusBar = ({ state, repo, branch }) => {
                     >
                         Chandan Gowda
                     </a>
+                    {" & "}
+                    <a
+                        href="https://www.linkedin.com/in/mithungowdab"
+                        className="underline hover:text-yellow"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                    >
+                        Mithun Gowda
+                    </a>
                 </span>
-           
             </div>
         </div>
     );
