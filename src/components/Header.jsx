@@ -17,6 +17,7 @@ import { Button } from "./ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "./ui/dialog";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "./ui/sheet";
 import { useState } from "react";
+import { Credits } from "./Credits";
 
 const COURSE_URL = "https://www.youtube.com/@EngineeringinKannada";
 
@@ -222,27 +223,11 @@ export const Header = ({
                                 </a>
                             </li>
                         </ul>
-                        <div className="px-5 py-3 border-t border-surface-3 text-[11px] text-zinc-500">
-                            Made with ♥️ by{" "}
-                            <a
-                                href="https://www.linkedin.com/in/chandan-s-gowda"
-                                className="underline text-zinc-400"
-                                target="_blank"
-                                rel="noopener noreferrer"
-                            >
-                                Chandan Gowda
-                            </a>
-                            <div className="mt-1">
-                                Contributor:{" "}
-                                <a
-                                    href="https://www.linkedin.com/in/mithungowdab"
-                                    className="underline text-zinc-400"
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                >
-                                    Mithun Gowda
-                                </a>
-                            </div>
+                        <div className="px-5 py-3 border-t border-surface-3">
+                            <Credits
+                                className="text-xs text-zinc-500 leading-relaxed"
+                                linkClassName="text-zinc-300 py-1"
+                            />
                         </div>
                     </SheetContent>
                 </Sheet>

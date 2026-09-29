@@ -1,4 +1,5 @@
 import { Activity, GitCommit, GitBranch, Hash } from "lucide-react";
+import { Credits } from "./Credits";
 
 export const StatusBar = ({ state, repo, branch }) => {
     const commits = repo ? Object.keys(repo.commits).length : 0;
@@ -10,10 +11,10 @@ export const StatusBar = ({ state, repo, branch }) => {
         : null;
     return (
         <div
-            className="h-8 px-4 md:px-6 flex items-center justify-between border-t border-surface-3 bg-surface-1/80 backdrop-blur text-[11px] font-mono text-zinc-400"
+            className="h-8 px-4 md:px-6 flex items-center justify-between gap-4 overflow-hidden border-t border-surface-3 bg-surface-1/80 backdrop-blur text-[11px] font-mono text-zinc-400"
             data-testid="status-bar"
         >
-            <div className="flex items-center gap-4">
+            <div className="flex items-center gap-4 flex-shrink-0 whitespace-nowrap">
                 <span className="flex items-center gap-1.5">
                     <Activity className="w-3 h-3 text-emerald-400" />
                     ready
@@ -37,34 +38,16 @@ export const StatusBar = ({ state, repo, branch }) => {
                     </>
                 )}
             </div>
-            <div className="hidden sm:flex items-center gap-4">
+            <div className="hidden sm:flex items-center gap-4 min-w-0 whitespace-nowrap">
+                {/* The hash is the first thing to go when the bar gets tight. */}
                 {head && (
-                    <span className="flex items-center gap-1">
+                    <span className="hidden xl:flex items-center gap-1">
                         <Hash className="w-3 h-3 text-zinc-500" />
                         <span className="text-yellow">{head}</span>
                     </span>
                 )}
-                {branch && <span className="text-yellow">{branch}</span>}
-                <span className="text-zinc-600">
-                    Made with ♥️ by{" "}
-                    <a
-                        href="https://www.linkedin.com/in/chandan-s-gowda"
-                        className="underline hover:text-yellow"
-                        target="_blank"
-                        rel="noopener noreferrer"
-                    >
-                        Chandan Gowda
-                    </a>
-                    {" · Contributor: "}
-                    <a
-                        href="https://www.linkedin.com/in/mithungowdab"
-                        className="underline hover:text-yellow"
-                        target="_blank"
-                        rel="noopener noreferrer"
-                    >
-                        Mithun Gowda
-                    </a>
-                </span>
+                {branch && <span className="text-yellow truncate max-w-[10rem]">{branch}</span>}
+                <Credits compact className="text-zinc-600" />
             </div>
         </div>
     );
