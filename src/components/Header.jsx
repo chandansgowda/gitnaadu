@@ -232,15 +232,17 @@ export const Header = ({
                             >
                                 Chandan Gowda
                             </a>
-                            {" & "}
-                            <a
-                                href="https://www.linkedin.com/in/mithungowdab"
-                                className="underline text-zinc-400"
-                                target="_blank"
-                                rel="noopener noreferrer"
-                            >
-                                Mithun Gowda
-                            </a>
+                            <div className="mt-1">
+                                Contributor:{" "}
+                                <a
+                                    href="https://www.linkedin.com/in/mithungowdab"
+                                    className="underline text-zinc-400"
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                >
+                                    Mithun Gowda
+                                </a>
+                            </div>
                         </div>
                     </SheetContent>
                 </Sheet>
