@@ -64,6 +64,22 @@ describe("shell parser", () => {
         expect(run(fresh(), "pwd || echo skipped").last.output.some((l) => l.text === "skipped")).toBe(false);
     });
 
+    test("ls hides dotfiles; ls -a shows them plus the repo's .git", () => {
+        const names = (r) => r.last.output[0].items.map((it) => it.name);
+        let s = run(fresh(), "mkdir proj", "cd proj", "touch .env a.txt").state;
+        expect(names(run(s, "ls"))).toEqual(["a.txt"]);
+        expect(names(run(s, "ls -a"))).toEqual([".", "..", ".env", "a.txt"]);
+        s = run(s, "git init").state;
+        expect(names(run(s, "ls"))).toEqual(["a.txt"]);
+        expect(names(run(s, "ls -a"))).toEqual([".", "..", ".git", ".env", "a.txt"]);
+        expect(names(run(s, "ls -A"))).toEqual([".git", ".env", "a.txt"]);
+        expect(names(run(s, "ls .git"))).toContain("HEAD");
+        expect(run(s, "ls -la").text).toMatch(/drwxr-xr-x .* \.git\//);
+        // .git isn't a real folder, so it never shows up as untracked
+        expect(run(s, "git status").text).not.toContain(".git");
+        expect(run(s, "cd .git").last.output[0].kind).toBe("err");
+    });
+
     test("pipes give a clear error", () => {
         expect(run(fresh(), "ls | cat").text).toMatch(/pipes/);
     });

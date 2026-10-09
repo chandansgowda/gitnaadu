@@ -320,13 +320,40 @@ HANDLERS.echo = (state, args) => ({
 
 HANDLERS.pwd = (state) => ({ state, output: [out(state.cwd)] });
 
+// The `.git` folder isn't stored in the virtual filesystem (the repo lives
+// in state.repos), so it's synthesized for listings: a fixed set of the
+// entries a fresh `git init` creates.
+export const GIT_DIR_ENTRIES = [
+    { name: "branches", type: "dir" },
+    { name: "hooks", type: "dir" },
+    { name: "info", type: "dir" },
+    { name: "objects", type: "dir" },
+    { name: "refs", type: "dir" },
+    { name: "HEAD", type: "file" },
+    { name: "config", type: "file" },
+    { name: "description", type: "file" },
+];
+
+const isRepoRoot = (state, path) => Object.values(state.repos || {}).some((r) => r.path === path);
+
 HANDLERS.ls = (state, args) => {
     const { flags, rest } = splitFlags(args);
     const target = rest[0] ? normalizePath(state.cwd, expandTilde(rest[0])) : state.cwd;
-    const node = getNode(state.fs, target);
+    const showAll = flags.has("-a") || flags.has("-A") || flags.has("--all");
+    let node = getNode(state.fs, target);
+    if (!node && target.endsWith("/.git") && isRepoRoot(state, dirName(target)))
+        node = { type: "dir", children: {}, virtualGit: true };
     if (!node) return { state, output: [err(`ls: cannot access '${rest[0]}': No such file or directory`)] };
     if (node.type === "file") return { state, output: [out(node.name)] };
-    const items = listDir(node);
+    let items = node.virtualGit ? GIT_DIR_ENTRIES : listDir(node);
+    if (showAll) {
+        if (!node.virtualGit && isRepoRoot(state, target) && !has(node.children, ".git"))
+            items = [{ name: ".git", type: "dir" }, ...items];
+        if (flags.has("-a") || flags.has("--all"))
+            items = [{ name: ".", type: "dir" }, { name: "..", type: "dir" }, ...items];
+    } else {
+        items = items.filter((it) => !it.name.startsWith("."));
+    }
     if (items.length === 0) return { state, output: [muted("(empty)")] };
     if (flags.has("-l")) {
         const lines = items.map((it) => {
@@ -345,6 +372,8 @@ HANDLERS.cd = (state, args) => {
     const target = args[0] || HOME;
     const next = normalizePath(state.cwd, expandTilde(target));
     const node = getNode(state.fs, next);
+    if (!node && next.endsWith("/.git") && isRepoRoot(state, dirName(next)))
+        return { state, output: [err("cd: .git is managed by GitNaadu behind the scenes — peek inside with `ls .git`")] };
     if (!node) return { state, output: [err(`cd: no such file or directory: ${target}`)] };
     if (node.type !== "dir") return { state, output: [err(`cd: not a directory: ${target}`)] };
     return { state: { ...state, cwd: next }, output: [] };
