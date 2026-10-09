@@ -908,18 +908,61 @@ GIT_HANDLERS.reset = withRepo((state, repo, args) => {
     };
 });
 
+// Commits (as hashes, resolved up front) named by `git revert` /
+// `git cherry-pick` arguments, in the order they are applied. A range (`A..B`) expands to every commit in it: newest
+// first for revert (undo from the top down), oldest first for cherry-pick.
+const pickTargets = (repo, op, rest) => {
+    const targets = [];
+    for (const a of rest) {
+        const range = resolveRange(repo, a);
+        if (range?.error) return { error: range.error };
+        if (!range) {
+            // Resolve now: `HEAD` must mean the HEAD before anything is applied.
+            const hash = resolveRev(repo, a);
+            if (!hash) return { error: `fatal: bad revision '${a}'` };
+            targets.push(hash);
+            continue;
+        }
+        const hashes = gitLog(repo, Infinity, logRangeOpts(repo, range)).map((c) => c.hash);
+        if (!hashes.length) return { error: `error: empty commit set passed ('${a}' has no commits)` };
+        targets.push(...(op === "revert" ? hashes : hashes.reverse()));
+    }
+    return { targets };
+};
+
 const pickLike = (op, fn, verb) =>
     withRepo((state, repo, args) => {
         const blocked = blockedByMerge(state, repo, op);
         if (blocked) return blocked;
         const { rest } = splitFlags(args);
-        if (!rest[0]) return { state, output: [err(`usage: git ${op} <commit>`)] };
-        const r = fn(state.fs, repo, rest[0]);
-        if (r.error) return { state, output: errLines(r.error) };
+        if (!rest[0]) return { state, output: [err(`usage: git ${op} <commit>... or <from>..<to>`)] };
+        const t = pickTargets(repo, op, rest);
+        if (t.error) return { state, output: errLines(t.error) };
+        // All or nothing: if one commit fails, none of them are applied.
+        const before = { fs: JSON.parse(JSON.stringify(state.fs)), repos: JSON.parse(JSON.stringify(state.repos)) };
+        const lines = [];
+        let last = null;
+        for (const target of t.targets) {
+            const r = fn(state.fs, repo, target);
+            if (r.error) {
+                const output = errLines(r.error);
+                if (t.targets.length > 1)
+                    output.push(muted(`(stopped: no commits were ${op === "revert" ? "reverted" : "cherry-picked"})`));
+                return { state: { ...state, ...before }, output };
+            }
+            lines.push(ok(`${verb} ${r.picked} as ${r.hash}`));
+            last = r;
+        }
         return {
             state,
-            output: [ok(`${verb} ${r.picked} as ${r.hash}`)],
-            highlight: { kind: `git-${op}`, target: rest[0], picked: r.picked, hash: r.hash },
+            output: lines,
+            highlight: {
+                kind: `git-${op}`,
+                target: rest.join(" "),
+                picked: last.picked,
+                hash: last.hash,
+                count: t.targets.length,
+            },
         };
     });
 
