@@ -123,6 +123,13 @@ code,
     height: 100vh;
     height: var(--app-height, 100dvh);
 }
+/* Set by useVisualViewport() only when an installed iOS app under-reports
+   its height; keeps html/body (overflow: hidden) from clipping the app. */
+html,
+body,
+#root {
+    min-height: var(--app-full-height, 0px);
+}
 .pt-safe {
     padding-top: env(safe-area-inset-top);
 }

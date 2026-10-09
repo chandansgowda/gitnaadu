@@ -50,6 +50,8 @@ const tabForHighlight = (kind = "") => {
     return null;
 };
 
+const TOAST_OFFSET = { top: "calc(env(safe-area-inset-top) + 64px)", left: 16, right: 16 };
+
 const TAB_LABELS = { git: "graph", diff: "diff", remote: "remote" };
 
 const TAB_TRIGGER_CLS =
@@ -338,7 +340,11 @@ export default function App() {
             />
             <Toaster
                 position={isMobile ? "top-center" : "top-right"}
-                offset={isMobile ? 64 : undefined}
+                // Below the header, which itself sits below the status bar /
+                // notch in the installed app. Sonner uses `mobileOffset` on
+                // narrow screens and ignores `offset` there.
+                offset={isMobile ? TOAST_OFFSET : undefined}
+                mobileOffset={TOAST_OFFSET}
                 theme="dark"
                 toastOptions={{
                     style: {
