@@ -859,6 +859,26 @@ export const resolveRev = (repo, rev) => {
     return h || null;
 };
 
+// Revision ranges: `A..B` -> [A, B]; `A...B` -> [merge-base(A, B), B] (what
+// `git diff A...B` compares). An empty side means HEAD. Returns null when
+// `arg` isn't a range, or { error } when a side doesn't resolve.
+export const resolveRange = (repo, arg) => {
+    const m = /^(.*?)(\.\.\.?)(.*)$/.exec(arg || "");
+    // Not a range: `..` alone, or a path such as `../notes.txt`.
+    if (!m || (!m[1] && !m[3]) || m[1].endsWith("/") || m[3].startsWith("/")) return null;
+    const [left, right] = [m[1] || "HEAD", m[3] || "HEAD"];
+    const a = resolveRev(repo, left);
+    const b = resolveRev(repo, right);
+    const bad = !a ? left : !b ? right : null;
+    if (bad) return { error: `fatal: ambiguous argument '${arg}': unknown revision '${bad}'` };
+    if (m[2] === "...") {
+        const base = mergeBase(repo, a, b);
+        if (!base) return { error: `fatal: ${left}...${right}: no merge base` };
+        return { from: base, to: b };
+    }
+    return { from: a, to: b };
+};
+
 export const gitReset = (fsRoot, repo, target, mode = "--mixed") => {
     const hash = resolveRev(repo, target);
     if (!hash) return { error: `fatal: ambiguous argument '${target}': unknown revision` };

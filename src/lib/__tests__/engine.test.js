@@ -159,6 +159,65 @@ describe("revisions", () => {
     });
 });
 
+describe("git diff revisions", () => {
+    // main: f.txt = a,b,c then g.txt; feature (from base): f.txt line b → B
+    const forked = () =>
+        run(
+            withRepo(),
+            "git checkout -b feature",
+            'echo "a\nB\nc" > f.txt',
+            'git commit -am "edit f"',
+            "git checkout main",
+            "echo g > g.txt",
+            "git add .",
+            'git commit -m "add g"',
+        ).state;
+    const files = (r) => r.last.output.filter((l) => /^--- /.test(l.text)).map((l) => l.text.split(/\s+/)[1]);
+
+    test("A..B compares the two branch tips", () => {
+        const s = forked();
+        const r = run(s, "git diff main..feature");
+        expect(r.last.highlight?.kind).toBe("git-diff");
+        expect(files(r).sort()).toEqual(["f.txt", "g.txt"]);
+        expect(r.text).toContain("+ B");
+        // same as the two-argument form
+        expect(run(s, "git diff main feature").text).toBe(r.text);
+    });
+
+    test("A...B compares B with the merge base", () => {
+        const r = run(forked(), "git diff main...feature");
+        expect(files(r)).toEqual(["f.txt"]);
+    });
+
+    test("an empty side means HEAD", () => {
+        const s = forked();
+        expect(run(s, "git diff feature..").text).toBe(run(s, "git diff feature..HEAD").text);
+        expect(run(s, "git diff ..feature").text).toBe(run(s, "git diff HEAD..feature").text);
+    });
+
+    test("unknown side errors; identical sides show no changes", () => {
+        const s = forked();
+        expect(run(s, "git diff main..nope").last.output[0].kind).toBe("err");
+        expect(run(s, "git diff main..main").text).toBe("(no changes)");
+    });
+
+    test("revisions before -- and paths after it", () => {
+        const s = forked();
+        expect(files(run(s, "git diff main..feature -- f.txt"))).toEqual(["f.txt"]);
+        expect(files(run(s, "git diff HEAD~1 -- g.txt"))).toEqual(["g.txt"]);
+        expect(run(s, "git diff nope -- f.txt").last.output[0].kind).toBe("err");
+    });
+
+    test("paths with .. still work as paths", () => {
+        let s = run(withRepo(), "mkdir sub", "cd sub").state;
+        s = run(s, "echo z >> ../f.txt").state;
+        expect(files(run(s, "git diff ../f.txt"))).toEqual(["f.txt"]);
+        s = run(s, "cd ..", "git add .", 'git commit -m "z"', "rm f.txt", "cd sub").state;
+        expect(files(run(s, "git diff ../f.txt"))).toEqual(["f.txt"]);
+        expect(files(run(s, "git diff"))).toEqual(["f.txt"]);
+    });
+});
+
 describe("branches", () => {
     test("-d refuses unmerged branches, -D forces", () => {
         let { state } = run(withRepo(), "git checkout -b wip", "touch w.txt", "git add .", 'git commit -m "w"', "git checkout main");

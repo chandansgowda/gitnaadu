@@ -49,6 +49,7 @@ import {
     stageTracked,
     relPath,
     resolveRev,
+    resolveRange,
     computeDiffPairs,
     remoteAheadBehind,
     status as gitStatus,
@@ -1104,17 +1105,24 @@ GIT_HANDLERS.show = withRepo((state, repo, args) => {
 
 GIT_HANDLERS.diff = withRepo((state, repo, args) => {
     const { flags, rest } = splitFlags(args);
-    const afterDashes = flags.has("--");
     // Leading args that name commits are revisions; the rest are paths.
+    // With `--`, everything before it is a revision and everything after it
+    // a path; without it, an arg is a revision unless it names a file.
+    const dash = args.indexOf("--");
+    const beforeDash = dash === -1 ? Infinity : args.slice(0, dash).filter((a) => !a.startsWith("-")).length;
+    const isFile = (a) => dash === -1 && Boolean(getNode(state.fs, normalizePath(state.cwd, expandTilde(a))));
     const revs = [];
-    while (
-        !afterDashes &&
-        revs.length < 2 &&
-        rest.length &&
-        resolveRev(repo, rest[0]) &&
-        !getNode(state.fs, normalizePath(state.cwd, expandTilde(rest[0])))
-    )
+    // `A..B` / `A...B` name both sides at once.
+    const range = beforeDash > 0 && rest.length && !isFile(rest[0]) ? resolveRange(repo, rest[0]) : null;
+    if (range?.error) return { state, output: [err(range.error)] };
+    if (range) {
+        rest.shift();
+        revs.push(range.from, range.to);
+    }
+    while (revs.length < 2 && rest.length && revs.length < beforeDash && resolveRev(repo, rest[0]) && !isFile(rest[0]))
         revs.push(rest.shift());
+    if (dash !== -1 && revs.length < beforeDash)
+        return { state, output: [err(`fatal: bad revision '${rest[0]}'`)] };
     let opts = {};
     if (flags.has("--staged") || flags.has("--cached")) opts = { staged: true };
     else if (revs.length === 2) opts = { between: [revs[0], revs[1]] };
