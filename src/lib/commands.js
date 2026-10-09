@@ -50,6 +50,7 @@ import {
     relPath,
     resolveRev,
     resolveRange,
+    logRangeOpts,
     computeDiffPairs,
     remoteAheadBehind,
     status as gitStatus,
@@ -703,17 +704,28 @@ GIT_HANDLERS.commit = withRepo((state, repo, args) => {
 GIT_HANDLERS.log = withRepo((state, repo, args) => {
     // Supported: --oneline, -n <N>, -<N>, --max-count=<N>. Other flags
     // (e.g. --graph, --all) are accepted and ignored.
+    // A revision (`feature`, `HEAD~2`) or range (`main..feature`,
+    // `main...feature`) picks what to list; other words are ignored.
     let oneline = false;
     let limit = Infinity;
+    let logOpts;
     for (let i = 0; i < args.length; i++) {
         const a = args[i];
+        if (a === "--") break;
         if (a === "--oneline") oneline = true;
         else if (a === "-n" && /^\d+$/.test(args[i + 1] || "")) limit = Number(args[++i]);
         else if (/^-\d+$/.test(a)) limit = Number(a.slice(1));
         else if (/^--max-count=\d+$/.test(a)) limit = Number(a.split("=")[1]);
+        else if (!a.startsWith("-") && !logOpts) {
+            const range = resolveRange(repo, a);
+            if (range?.error) return { state, output: [err(range.error)] };
+            if (range) logOpts = logRangeOpts(repo, range);
+            else if (resolveRev(repo, a)) logOpts = { starts: [resolveRev(repo, a)] };
+        }
     }
-    const commits = gitLog(repo).slice(0, limit);
-    if (commits.length === 0) return { state, output: [muted("(no commits yet)")] };
+    const commits = gitLog(repo, 200, logOpts).slice(0, limit);
+    if (commits.length === 0)
+        return { state, output: [muted(logOpts ? "(no commits in that range)" : "(no commits yet)")] };
     if (oneline) {
         const head = headCommit(repo);
         const lines = commits.map((c) => {
@@ -1115,6 +1127,7 @@ GIT_HANDLERS.diff = withRepo((state, repo, args) => {
     // `A..B` / `A...B` name both sides at once.
     const range = beforeDash > 0 && rest.length && !isFile(rest[0]) ? resolveRange(repo, rest[0]) : null;
     if (range?.error) return { state, output: [err(range.error)] };
+    if (range && !range.from) return { state, output: [err(`fatal: ${rest[0]}: no merge base`)] };
     if (range) {
         rest.shift();
         revs.push(range.from, range.to);

@@ -385,15 +385,18 @@ export const gitCommit = (repo, message, opts = {}) => {
     return { ok: true, hash, message: msg, merge: !!merging };
 };
 
-export const gitLog = (repo, limit = 200) => {
-    const start = headCommit(repo);
-    if (!start) return [];
+// opts.starts: tips to walk from (default HEAD); opts.exclude: commits to
+// leave out along with everything only reachable through them (`A..B`).
+export const gitLog = (repo, limit = 200, opts = {}) => {
+    const starts = (opts.starts || [headCommit(repo)]).filter(Boolean);
+    if (!starts.length) return [];
+    const exclude = opts.exclude || new Set();
     const out = [];
     const seen = new Set();
-    const stack = [start];
+    const stack = [...starts];
     while (stack.length) {
         const h = stack.pop();
-        if (seen.has(h) || !has(repo.commits, h)) continue;
+        if (seen.has(h) || exclude.has(h) || !has(repo.commits, h)) continue;
         seen.add(h);
         out.push(repo.commits[h]);
         for (const p of repo.commits[h].parents) stack.push(p);
@@ -859,9 +862,10 @@ export const resolveRev = (repo, rev) => {
     return h || null;
 };
 
-// Revision ranges: `A..B` -> [A, B]; `A...B` -> [merge-base(A, B), B] (what
-// `git diff A...B` compares). An empty side means HEAD. Returns null when
-// `arg` isn't a range, or { error } when a side doesn't resolve.
+// Revision ranges. `from`/`to` are what `git diff` compares: A and B for
+// `A..B`, merge-base(A, B) and B for `A...B`. `left`/`right` are the two
+// tips (for `git log`). An empty side means HEAD. Returns null when `arg`
+// isn't a range, or { error } when a side doesn't resolve.
 export const resolveRange = (repo, arg) => {
     const m = /^(.*?)(\.\.\.?)(.*)$/.exec(arg || "");
     // Not a range: `..` alone, or a path such as `../notes.txt`.
@@ -873,10 +877,18 @@ export const resolveRange = (repo, arg) => {
     if (bad) return { error: `fatal: ambiguous argument '${arg}': unknown revision '${bad}'` };
     if (m[2] === "...") {
         const base = mergeBase(repo, a, b);
-        if (!base) return { error: `fatal: ${left}...${right}: no merge base` };
-        return { from: base, to: b };
+        return { from: base, to: b, left: a, right: b, symmetric: true };
     }
-    return { from: a, to: b };
+    return { from: a, to: b, left: a, right: b };
+};
+
+// Commits for `git log` given a range: `A..B` is what B has and A doesn't;
+// `A...B` is what either has that the other doesn't.
+export const logRangeOpts = (repo, range) => {
+    const A = ancestors(repo, range.left);
+    if (!range.symmetric) return { starts: [range.right], exclude: A };
+    const B = ancestors(repo, range.right);
+    return { starts: [range.left, range.right], exclude: new Set([...A].filter((h) => B.has(h))) };
 };
 
 export const gitReset = (fsRoot, repo, target, mode = "--mixed") => {

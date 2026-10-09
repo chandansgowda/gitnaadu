@@ -208,6 +208,19 @@ describe("git diff revisions", () => {
         expect(run(s, "git diff nope -- f.txt").last.output[0].kind).toBe("err");
     });
 
+    test("git log takes a revision or a range", () => {
+        const s = forked();
+        const msgs = (line) => run(s, `git log --oneline ${line}`).last.output.map((l) => l.text.replace(/^\S+ (\(.*?\) )?/, ""));
+        expect(msgs("")).toEqual(["add g", "base"]);
+        expect(msgs("feature")).toEqual(["edit f", "base"]);
+        expect(msgs("main..feature")).toEqual(["edit f"]);
+        expect(msgs("feature..main")).toEqual(["add g"]);
+        expect(msgs("main...feature").sort()).toEqual(["add g", "edit f"]);
+        expect(run(s, "git log main..main").text).toBe("(no commits in that range)");
+        expect(run(s, "git log main..nope").last.output[0].kind).toBe("err");
+        expect(msgs("-n 1")).toEqual(["add g"]);
+    });
+
     test("paths with .. still work as paths", () => {
         let s = run(withRepo(), "mkdir sub", "cd sub").state;
         s = run(s, "echo z >> ../f.txt").state;
