@@ -32,6 +32,12 @@ const reviveState = (raw) => {
         parsed.repos = parsed.repos || {};
         for (const repo of Object.values(parsed.repos)) ensureRepoShape(repo);
         parsed.lines = Array.isArray(parsed.lines) ? parsed.lines : [];
+        // Older saves carry the previous banner text; swap in the current one.
+        parsed.lines = parsed.lines.map((l) =>
+            l.kind === "system" && l.text === "GitNaadu Terminal v1.0  ·  Engineering in Kannada"
+                ? WELCOME_LINES[0]
+                : l,
+        );
         parsed.history = Array.isArray(parsed.history) ? parsed.history : [];
         return parsed;
     } catch {

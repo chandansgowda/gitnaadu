@@ -49,6 +49,8 @@ import {
     stageTracked,
     relPath,
     resolveRev,
+    resolveRange,
+    logRangeOpts,
     computeDiffPairs,
     remoteAheadBehind,
     status as gitStatus,
@@ -320,13 +322,40 @@ HANDLERS.echo = (state, args) => ({
 
 HANDLERS.pwd = (state) => ({ state, output: [out(state.cwd)] });
 
+// The `.git` folder isn't stored in the virtual filesystem (the repo lives
+// in state.repos), so it's synthesized for listings: a fixed set of the
+// entries a fresh `git init` creates.
+export const GIT_DIR_ENTRIES = [
+    { name: "branches", type: "dir" },
+    { name: "hooks", type: "dir" },
+    { name: "info", type: "dir" },
+    { name: "objects", type: "dir" },
+    { name: "refs", type: "dir" },
+    { name: "HEAD", type: "file" },
+    { name: "config", type: "file" },
+    { name: "description", type: "file" },
+];
+
+const isRepoRoot = (state, path) => Object.values(state.repos || {}).some((r) => r.path === path);
+
 HANDLERS.ls = (state, args) => {
     const { flags, rest } = splitFlags(args);
     const target = rest[0] ? normalizePath(state.cwd, expandTilde(rest[0])) : state.cwd;
-    const node = getNode(state.fs, target);
+    const showAll = flags.has("-a") || flags.has("-A") || flags.has("--all");
+    let node = getNode(state.fs, target);
+    if (!node && target.endsWith("/.git") && isRepoRoot(state, dirName(target)))
+        node = { type: "dir", children: {}, virtualGit: true };
     if (!node) return { state, output: [err(`ls: cannot access '${rest[0]}': No such file or directory`)] };
     if (node.type === "file") return { state, output: [out(node.name)] };
-    const items = listDir(node);
+    let items = node.virtualGit ? GIT_DIR_ENTRIES : listDir(node);
+    if (showAll) {
+        if (!node.virtualGit && isRepoRoot(state, target) && !has(node.children, ".git"))
+            items = [{ name: ".git", type: "dir" }, ...items];
+        if (flags.has("-a") || flags.has("--all"))
+            items = [{ name: ".", type: "dir" }, { name: "..", type: "dir" }, ...items];
+    } else {
+        items = items.filter((it) => !it.name.startsWith("."));
+    }
     if (items.length === 0) return { state, output: [muted("(empty)")] };
     if (flags.has("-l")) {
         const lines = items.map((it) => {
@@ -345,6 +374,8 @@ HANDLERS.cd = (state, args) => {
     const target = args[0] || HOME;
     const next = normalizePath(state.cwd, expandTilde(target));
     const node = getNode(state.fs, next);
+    if (!node && next.endsWith("/.git") && isRepoRoot(state, dirName(next)))
+        return { state, output: [err("cd: .git is managed by GitNaadu behind the scenes — peek inside with `ls .git`")] };
     if (!node) return { state, output: [err(`cd: no such file or directory: ${target}`)] };
     if (node.type !== "dir") return { state, output: [err(`cd: not a directory: ${target}`)] };
     return { state: { ...state, cwd: next }, output: [] };
@@ -673,17 +704,28 @@ GIT_HANDLERS.commit = withRepo((state, repo, args) => {
 GIT_HANDLERS.log = withRepo((state, repo, args) => {
     // Supported: --oneline, -n <N>, -<N>, --max-count=<N>. Other flags
     // (e.g. --graph, --all) are accepted and ignored.
+    // A revision (`feature`, `HEAD~2`) or range (`main..feature`,
+    // `main...feature`) picks what to list; other words are ignored.
     let oneline = false;
     let limit = Infinity;
+    let logOpts;
     for (let i = 0; i < args.length; i++) {
         const a = args[i];
+        if (a === "--") break;
         if (a === "--oneline") oneline = true;
         else if (a === "-n" && /^\d+$/.test(args[i + 1] || "")) limit = Number(args[++i]);
         else if (/^-\d+$/.test(a)) limit = Number(a.slice(1));
         else if (/^--max-count=\d+$/.test(a)) limit = Number(a.split("=")[1]);
+        else if (!a.startsWith("-") && !logOpts) {
+            const range = resolveRange(repo, a);
+            if (range?.error) return { state, output: [err(range.error)] };
+            if (range) logOpts = logRangeOpts(repo, range);
+            else if (resolveRev(repo, a)) logOpts = { starts: [resolveRev(repo, a)] };
+        }
     }
-    const commits = gitLog(repo).slice(0, limit);
-    if (commits.length === 0) return { state, output: [muted("(no commits yet)")] };
+    const commits = gitLog(repo, 200, logOpts).slice(0, limit);
+    if (commits.length === 0)
+        return { state, output: [muted(logOpts ? "(no commits in that range)" : "(no commits yet)")] };
     if (oneline) {
         const head = headCommit(repo);
         const lines = commits.map((c) => {
@@ -1075,17 +1117,25 @@ GIT_HANDLERS.show = withRepo((state, repo, args) => {
 
 GIT_HANDLERS.diff = withRepo((state, repo, args) => {
     const { flags, rest } = splitFlags(args);
-    const afterDashes = flags.has("--");
     // Leading args that name commits are revisions; the rest are paths.
+    // With `--`, everything before it is a revision and everything after it
+    // a path; without it, an arg is a revision unless it names a file.
+    const dash = args.indexOf("--");
+    const beforeDash = dash === -1 ? Infinity : args.slice(0, dash).filter((a) => !a.startsWith("-")).length;
+    const isFile = (a) => dash === -1 && Boolean(getNode(state.fs, normalizePath(state.cwd, expandTilde(a))));
     const revs = [];
-    while (
-        !afterDashes &&
-        revs.length < 2 &&
-        rest.length &&
-        resolveRev(repo, rest[0]) &&
-        !getNode(state.fs, normalizePath(state.cwd, expandTilde(rest[0])))
-    )
+    // `A..B` / `A...B` name both sides at once.
+    const range = beforeDash > 0 && rest.length && !isFile(rest[0]) ? resolveRange(repo, rest[0]) : null;
+    if (range?.error) return { state, output: [err(range.error)] };
+    if (range && !range.from) return { state, output: [err(`fatal: ${rest[0]}: no merge base`)] };
+    if (range) {
+        rest.shift();
+        revs.push(range.from, range.to);
+    }
+    while (revs.length < 2 && rest.length && revs.length < beforeDash && resolveRev(repo, rest[0]) && !isFile(rest[0]))
         revs.push(rest.shift());
+    if (dash !== -1 && revs.length < beforeDash)
+        return { state, output: [err(`fatal: bad revision '${rest[0]}'`)] };
     let opts = {};
     if (flags.has("--staged") || flags.has("--cached")) opts = { staged: true };
     else if (revs.length === 2) opts = { between: [revs[0], revs[1]] };
@@ -1106,11 +1156,11 @@ GIT_HANDLERS.restore = withRepo((state, repo, args) => {
         if (one.error) return { state, output: errLines(one.error) };
         count += (staged ? one.unstaged : one.restored) || 0;
     }
-    return {
-        state,
-        output: [ok(staged ? `Unstaged ${count} change(s)` : `Restored ${count} file(s)`)],
-        highlight: { kind: "git-restore", path: rest[0] },
-    };
+    const line =
+        count === 0
+            ? muted(staged ? "Nothing to unstage" : "Nothing to restore: no changes in those files")
+            : ok(staged ? `Unstaged ${count} change(s)` : `Restored ${count} file(s)`);
+    return { state, output: [line], highlight: { kind: "git-restore", path: rest[0] } };
 });
 
 GIT_HANDLERS.rm = withRepo((state, repo, args) => {

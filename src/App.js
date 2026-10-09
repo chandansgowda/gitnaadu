@@ -18,10 +18,10 @@ import {
 import { useGitNaadu } from "./hooks/useGitNaadu";
 import { useSound, soundForHighlight } from "./hooks/useSound";
 import { useChallenges } from "./hooks/useChallenges";
+import { useToasts } from "./hooks/useToasts";
 import { ChallengePanel } from "./components/ChallengePanel";
 import { findRepo, currentBranch } from "./lib/gitEngine";
 import { Toaster } from "./components/ui/sonner";
-import { toast } from "sonner";
 import { AnimatePresence, motion } from "framer-motion";
 import { MobileNav } from "./components/MobileNav";
 import { useIsMobile, useVisualViewport } from "./hooks/useViewport";
@@ -50,6 +50,8 @@ const tabForHighlight = (kind = "") => {
     return null;
 };
 
+const TOAST_OFFSET = { top: "calc(env(safe-area-inset-top) + 64px)", left: 16, right: 16 };
+
 const TAB_LABELS = { git: "graph", diff: "diff", remote: "remote" };
 
 const TAB_TRIGGER_CLS =
@@ -58,6 +60,7 @@ const TAB_TRIGGER_CLS =
 export default function App() {
     const [state, setState, stateRef, resetState, hist] = useGitNaadu();
     const sound = useSound();
+    const toasts = useToasts();
     const isMobile = useIsMobile();
     const keyboardOpen = useVisualViewport();
     const [highlight, setHighlight] = useState(null);
@@ -89,7 +92,7 @@ export default function App() {
         lastCommand,
         onProgress: (challenge, idx) => {
             sound.play("success");
-            toast.success(`Step ${idx} done`, {
+            toasts.success(`Step ${idx} done`, {
                 description: challenge.steps[idx - 1]?.text,
                 duration: 2200,
                 position: isMobile ? "top-center" : "bottom-right",
@@ -97,7 +100,7 @@ export default function App() {
         },
         onComplete: (challenge) => {
             sound.play("success");
-            toast.success(`Challenge complete: ${challenge.title}`, {
+            toasts.success(`Challenge complete: ${challenge.title}`, {
                 description: challenge.outro,
                 duration: 4500,
                 position: isMobile ? "top-center" : "bottom-right",
@@ -145,10 +148,10 @@ export default function App() {
         setBadges({});
         setTab(isMobile ? "terminal" : "git");
         sound.play("toggle");
-        toast.success("Playground reset", {
+        toasts.success("Playground reset", {
             description: "All repos, files and history cleared.",
         });
-    }, [resetState, sound, isMobile]);
+    }, [resetState, sound, toasts, isMobile]);
 
     const openFile = useCallback(
         (path) => {
@@ -294,6 +297,11 @@ export default function App() {
                 sound.toggle();
                 sound.play("toggle");
             }}
+            toastsEnabled={toasts.enabled}
+            onToggleToasts={() => {
+                toasts.toggle();
+                sound.play("toggle");
+            }}
             onOpenChallenges={() => {
                 setChallengesOpen(true);
                 // If there's an active challenge, jump straight to it.
@@ -332,7 +340,11 @@ export default function App() {
             />
             <Toaster
                 position={isMobile ? "top-center" : "top-right"}
-                offset={isMobile ? 64 : undefined}
+                // Below the header, which itself sits below the status bar /
+                // notch in the installed app. Sonner uses `mobileOffset` on
+                // narrow screens and ignores `offset` there.
+                offset={isMobile ? TOAST_OFFSET : undefined}
+                mobileOffset={TOAST_OFFSET}
                 theme="dark"
                 toastOptions={{
                     style: {
@@ -371,7 +383,7 @@ export default function App() {
                         </motion.div>
                     )}
                     <CommandExplainer
-                        highlight={highlight}
+                        highlight={toasts.enabled ? highlight : null}
                         onClose={() => setHighlight(null)}
                         className="top-2 left-2 right-2 w-auto max-w-none"
                         action={
@@ -449,7 +461,7 @@ export default function App() {
                     </Tabs>
 
                     <CommandExplainer
-                        highlight={highlight}
+                        highlight={toasts.enabled ? highlight : null}
                         onClose={() => setHighlight(null)}
                     />
                 </div>

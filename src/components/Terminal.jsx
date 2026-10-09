@@ -2,12 +2,10 @@ import { useEffect, useRef, useState, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
     Terminal as TerminalIcon,
-    ChevronRight,
-    ChevronUp,
-    ChevronDown,
     CornerDownLeft,
 } from "lucide-react";
 import { executeCommand, tabComplete } from "../lib/commands";
+import { WELCOME_LINES } from "../lib/initialState";
 import { isTouchDevice } from "../hooks/useViewport";
 
 // Render a single output line based on its kind
@@ -46,6 +44,22 @@ const Line = ({ line }) => {
         );
     }
     let cls = "text-zinc-200";
+    if (line.link) {
+        return (
+            <div className="font-mono text-xs sm:text-sm leading-relaxed whitespace-pre-wrap text-yellow">
+                {line.text}
+                <a
+                    href={line.link.href}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="underline underline-offset-2 hover:text-white"
+                    onClick={(e) => e.stopPropagation()}
+                >
+                    {line.link.text}
+                </a>
+            </div>
+        );
+    }
     if (line.kind === "err" || line.kind === "del") cls = "text-rose-400";
     if (line.kind === "muted") cls = "text-zinc-500";
     if (line.kind === "success") cls = "text-emerald-400";
@@ -147,8 +161,10 @@ export const Terminal = ({
         const lastClear = output.map((l) => l.kind).lastIndexOf("clear");
         const hasClear = lastClear !== -1;
         const hasErr = output.some((l) => l.kind === "err");
+        // On phones the input is docked below the output, so a cleared
+        // screen would be completely blank — show the welcome banner instead.
         const linesToAdd = hasClear
-            ? output.slice(lastClear + 1)
+            ? [...(isMobile ? WELCOME_LINES : []), ...output.slice(lastClear + 1)]
             : [{ kind: "prompt", cwd: state.cwd, branch, text: raw }, ...output];
         setState(
             {
@@ -318,24 +334,6 @@ export const Terminal = ({
                             <span className="font-mono text-sm text-yellow select-none">❯</span>
                             {inputEl}
                         </div>
-                        {[
-                            { icon: ChevronUp, label: "Previous command", run: historyPrev },
-                            { icon: ChevronDown, label: "Next command", run: historyNext },
-                        ].map((k) => (
-                            <button
-                                key={k.label}
-                                type="button"
-                                onMouseDown={keepFocus}
-                                onClick={(e) => {
-                                    e.stopPropagation();
-                                    k.run();
-                                }}
-                                className="w-9 h-11 flex-shrink-0 flex items-center justify-center rounded-lg bg-surface-2 border border-surface-3 text-zinc-300 active:bg-surface-3"
-                                aria-label={k.label}
-                            >
-                                <k.icon className="w-4 h-4" />
-                            </button>
-                        ))}
                         <button
                             type="button"
                             onMouseDown={keepFocus}

@@ -8,22 +8,36 @@ import {
     ChevronDown,
     Home,
 } from "lucide-react";
+import { GIT_DIR_ENTRIES } from "../lib/commands";
 
 // Renders the virtual filesystem tree. Avoids recursive component to keep
 // babel + dev-tools instrumentation happy; uses an iterative flatten.
 
-const flatten = (root, isOpen) => {
+// Repos keep their history in state.repos, not in the filesystem, so each
+// repo root gets a read-only stand-in `.git` folder to show it exists.
+const virtualGitDir = () => ({
+    type: "dir",
+    name: ".git",
+    virtual: true,
+    children: Object.fromEntries(
+        GIT_DIR_ENTRIES.map((e) => [
+            e.name,
+            { ...e, virtual: true, ...(e.type === "dir" ? { children: {} } : {}) },
+        ]),
+    ),
+});
+
+const flatten = (root, isOpen, repoRoots) => {
     const out = [];
     const walk = (node, path, depth) => {
-        if (path !== "/") {
-            // skip rendering root path entry as a duplicate of "/"
-        }
         out.push({ node, path, depth });
         if (node.type === "dir" && isOpen(path)) {
             const children = Object.values(node.children || {}).sort((a, b) => {
                 if (a.type === b.type) return a.name.localeCompare(b.name);
                 return a.type === "dir" ? -1 : 1;
             });
+            if (repoRoots.has(path) && !children.some((c) => c.name === ".git"))
+                children.unshift(virtualGitDir());
             for (const child of children) {
                 walk(
                     child,
@@ -58,7 +72,12 @@ export const FileTree = ({ state, repoPath, onOpenFile }) => {
 
     const toggle = (p) => setOpenMap((m) => ({ ...m, [p]: !isOpen(p) }));
 
-    const items = flatten(state.fs, isOpen);
+    const repoRoots = useMemo(
+        () => new Set(Object.values(state.repos || {}).map((r) => r.path)),
+        [state.repos],
+    );
+
+    const items = flatten(state.fs, isOpen, repoRoots);
 
     return (
         <div className="h-full overflow-auto bg-surface-0">
@@ -81,12 +100,14 @@ export const FileTree = ({ state, repoPath, onOpenFile }) => {
                         return (
                             <div
                                 key={path}
-                                onClick={() => onOpenFile && onOpenFile(path)}
+                                onClick={() => !node.virtual && onOpenFile && onOpenFile(path)}
                                 className={
-                                    "flex items-center gap-2 py-1 pr-2 text-sm font-mono rounded transition-colors cursor-pointer " +
-                                    (isCwd
-                                        ? "bg-yellow/10"
-                                        : "hover:bg-surface-2")
+                                    "flex items-center gap-2 py-1 pr-2 text-sm font-mono rounded transition-colors " +
+                                    (node.virtual
+                                        ? "opacity-50 cursor-default"
+                                        : isCwd
+                                          ? "bg-yellow/10 cursor-pointer"
+                                          : "hover:bg-surface-2 cursor-pointer")
                                 }
                                 style={{ paddingLeft: padLeft }}
                                 data-testid={"file-" + node.name}
@@ -98,13 +119,17 @@ export const FileTree = ({ state, repoPath, onOpenFile }) => {
                             </div>
                         );
                     }
-                    const open = isOpen(path);
+                    // Folders inside the stand-in .git have nothing to expand.
+                    const leaf = node.virtual && node.name !== ".git";
+                    const open = !leaf && isOpen(path);
                     return (
                         <div
                             key={path}
-                            onClick={() => toggle(path)}
+                            onClick={() => !leaf && toggle(path)}
                             className={
-                                "flex items-center gap-1.5 py-1 pr-2 text-sm font-mono rounded cursor-pointer transition-colors " +
+                                "flex items-center gap-1.5 py-1 pr-2 text-sm font-mono rounded transition-colors " +
+                                (leaf ? "cursor-default " : "cursor-pointer ") +
+                                (node.virtual ? "opacity-50 " : "") +
                                 (isCwd
                                     ? "bg-yellow/10 text-yellow"
                                     : "text-zinc-200 hover:bg-surface-2")
@@ -112,7 +137,9 @@ export const FileTree = ({ state, repoPath, onOpenFile }) => {
                             style={{ paddingLeft: padLeft }}
                             data-testid={"dir-" + (node.name === "/" ? "root" : node.name)}
                         >
-                            {open ? (
+                            {leaf ? (
+                                <span className="w-3.5 h-3.5 flex-shrink-0" />
+                            ) : open ? (
                                 <ChevronDown className="w-3.5 h-3.5 text-zinc-500" />
                             ) : (
                                 <ChevronRight className="w-3.5 h-3.5 text-zinc-500" />
@@ -128,6 +155,11 @@ export const FileTree = ({ state, repoPath, onOpenFile }) => {
                             {isRepo && (
                                 <span className="ml-1 px-1.5 py-0.5 text-[9px] uppercase font-bold tracking-wider rounded-sm bg-yellow text-black">
                                     repo
+                                </span>
+                            )}
+                            {node.virtual && node.name === ".git" && (
+                                <span className="ml-1 px-1.5 py-0.5 text-[9px] uppercase font-bold tracking-wider rounded-sm border border-surface-3 text-zinc-400">
+                                    hidden
                                 </span>
                             )}
                         </div>

@@ -12,12 +12,19 @@ import {
     MoreVertical,
     Youtube,
     ChevronRight,
+    Menu,
+    Bell,
+    BellOff,
+    Download,
+    Share,
+    SquarePlus,
 } from "lucide-react";
 import { Button } from "./ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "./ui/dialog";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "./ui/sheet";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Credits } from "./Credits";
+import { useInstall } from "../hooks/useInstall";
 
 const COURSE_URL = "https://www.youtube.com/@EngineeringinKannada";
 
@@ -33,6 +40,8 @@ export const Header = ({
     canRedo,
     soundEnabled,
     onToggleSound,
+    toastsEnabled,
+    onToggleToasts,
     onOpenChallenges,
     challengesDone = 0,
     challengesTotal = 0,
@@ -40,6 +49,125 @@ export const Header = ({
 }) => {
     const [confirmOpen, setConfirmOpen] = useState(false);
     const [menuOpen, setMenuOpen] = useState(false);
+    const [iosHelpOpen, setIosHelpOpen] = useState(false);
+    const menuRef = useRef(null);
+    const { canInstall, install } = useInstall();
+
+    // Close the desktop dropdown on an outside click or Escape.
+    useEffect(() => {
+        if (!menuOpen || isMobile) return;
+        const onDown = (e) => {
+            if (!menuRef.current?.contains(e.target)) setMenuOpen(false);
+        };
+        const onKey = (e) => {
+            if (e.key === "Escape") setMenuOpen(false);
+        };
+        document.addEventListener("mousedown", onDown);
+        document.addEventListener("keydown", onKey);
+        return () => {
+            document.removeEventListener("mousedown", onDown);
+            document.removeEventListener("keydown", onKey);
+        };
+    }, [menuOpen, isMobile]);
+
+    // Settings menu, shared by the desktop dropdown and the phone sheet.
+    const menuItems = [
+        canInstall && {
+            icon: Download,
+            label: "Install app",
+            hint: isMobile ? "Add to home screen" : undefined,
+            onClick: async () => {
+                if ((await install()) === "ios") setIosHelpOpen(true);
+            },
+            testid: "header-install-btn",
+        },
+        {
+            icon: soundEnabled ? Volume2 : VolumeX,
+            label: soundEnabled ? "Sound on" : "Sound off",
+            hint: isMobile ? "Tap to toggle" : undefined,
+            onClick: onToggleSound,
+            keepOpen: true,
+            muted: !soundEnabled,
+            testid: "header-sound-btn",
+        },
+        {
+            icon: toastsEnabled ? Bell : BellOff,
+            label: toastsEnabled ? "Notifications on" : "Notifications off",
+            hint: isMobile ? "Tap to toggle" : undefined,
+            onClick: onToggleToasts,
+            keepOpen: true,
+            muted: !toastsEnabled,
+            testid: "header-toasts-btn",
+        },
+        {
+            icon: Info,
+            label: "How it works",
+            onClick: onShowHelp,
+            testid: "header-help-btn",
+        },
+        {
+            icon: RotateCcw,
+            label: "Reset playground",
+            onClick: () => setConfirmOpen(true),
+            testid: "header-reset-btn",
+        },
+    ].filter(Boolean);
+
+    const iosHelpDialog = (
+        <Dialog open={iosHelpOpen} onOpenChange={setIosHelpOpen}>
+            <DialogContent
+                className="w-[calc(100%-2rem)] rounded-xl bg-surface-1 border-surface-3 text-white"
+                data-testid="install-ios-dialog"
+            >
+                <DialogHeader>
+                    <DialogTitle className="font-black tracking-tight text-left pr-6">
+                        Install GitNaadu
+                    </DialogTitle>
+                </DialogHeader>
+                <p className="text-sm text-zinc-400">
+                    Add GitNaadu to your home screen to open it like an app —
+                    full screen, and it works offline.
+                </p>
+                <ol className="space-y-3 text-sm text-zinc-200">
+                    <li className="flex items-center gap-3">
+                        <span className="w-6 h-6 rounded-full bg-yellow text-black text-xs font-bold flex items-center justify-center flex-shrink-0">
+                            1
+                        </span>
+                        <span>
+                            Tap the <b>Share</b> button{" "}
+                            <Share className="inline w-4 h-4 -mt-1 text-sky-400" /> in
+                            the browser toolbar
+                        </span>
+                    </li>
+                    <li className="flex items-center gap-3">
+                        <span className="w-6 h-6 rounded-full bg-yellow text-black text-xs font-bold flex items-center justify-center flex-shrink-0">
+                            2
+                        </span>
+                        <span>
+                            Choose <b>Add to Home Screen</b>{" "}
+                            <SquarePlus className="inline w-4 h-4 -mt-1 text-zinc-300" />
+                        </span>
+                    </li>
+                    <li className="flex items-center gap-3">
+                        <span className="w-6 h-6 rounded-full bg-yellow text-black text-xs font-bold flex items-center justify-center flex-shrink-0">
+                            3
+                        </span>
+                        <span>
+                            Tap <b>Add</b>
+                        </span>
+                    </li>
+                </ol>
+                <div className="flex justify-end pt-1">
+                    <Button
+                        className="bg-yellow text-black hover:bg-yellow/90"
+                        onClick={() => setIosHelpOpen(false)}
+                    >
+                        Got it
+                    </Button>
+                </div>
+            </DialogContent>
+        </Dialog>
+    );
 
     const resetDialog = (
         <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
@@ -80,28 +208,6 @@ export const Header = ({
 
     if (isMobile) {
         const path = cwd.replace("/home/student", "~");
-        const menuItems = [
-            {
-                icon: soundEnabled ? Volume2 : VolumeX,
-                label: soundEnabled ? "Sound on" : "Sound off",
-                hint: "Tap to toggle",
-                onClick: onToggleSound,
-                keepOpen: true,
-                testid: "header-sound-btn",
-            },
-            {
-                icon: Info,
-                label: "How it works",
-                onClick: onShowHelp,
-                testid: "header-help-btn",
-            },
-            {
-                icon: RotateCcw,
-                label: "Reset playground",
-                onClick: () => setConfirmOpen(true),
-                testid: "header-reset-btn",
-            },
-        ];
         return (
             <header
                 className="flex-shrink-0 border-b border-surface-3 bg-surface-1/80 backdrop-blur-md relative z-30 pt-safe"
@@ -190,7 +296,7 @@ export const Header = ({
                         </SheetHeader>
                         <ul className="px-2 pb-2">
                             {menuItems.map((m) => (
-                                <li key={m.label}>
+                                <li key={m.testid}>
                                     <button
                                         onClick={() => {
                                             if (!m.keepOpen) setMenuOpen(false);
@@ -199,7 +305,12 @@ export const Header = ({
                                         className="w-full flex items-center gap-3 px-3 h-12 rounded-lg text-sm text-zinc-200 active:bg-surface-2"
                                         data-testid={m.testid}
                                     >
-                                        <m.icon className="w-5 h-5 text-yellow" />
+                                        <m.icon
+                                            className={
+                                                "w-5 h-5 " +
+                                                (m.muted ? "text-zinc-500" : "text-yellow")
+                                            }
+                                        />
                                         <span className="flex-1 text-left">{m.label}</span>
                                         {m.hint && (
                                             <span className="text-[11px] text-zinc-500">
@@ -232,13 +343,14 @@ export const Header = ({
                     </SheetContent>
                 </Sheet>
                 {resetDialog}
+                {iosHelpDialog}
             </header>
         );
     }
 
     return (
         <header
-            className="flex items-center justify-between px-4 md:px-6 h-14 border-b border-surface-3 bg-surface-1/60 backdrop-blur-md relative z-30"
+            className="flex items-center justify-between px-4 md:px-6 h-14 border-b border-surface-3 bg-surface-1/60 backdrop-blur-md relative z-40"
             data-testid="app-header"
         >
             <div className="flex items-center gap-3">
@@ -312,21 +424,6 @@ export const Header = ({
                 <Button
                     variant="ghost"
                     size="sm"
-                    onClick={onToggleSound}
-                    className="text-zinc-300 hover:text-white hover:bg-surface-2 px-2"
-                    data-testid="header-sound-btn"
-                    title={soundEnabled ? "Mute sounds" : "Enable sounds"}
-                    aria-label={soundEnabled ? "Mute sounds" : "Enable sounds"}
-                >
-                    {soundEnabled ? (
-                        <Volume2 className="w-4 h-4 text-yellow" />
-                    ) : (
-                        <VolumeX className="w-4 h-4 text-zinc-500" />
-                    )}
-                </Button>
-                <Button
-                    variant="ghost"
-                    size="sm"
                     onClick={onOpenChallenges}
                     className="text-zinc-300 hover:text-white hover:bg-surface-2 relative"
                     data-testid="header-challenges-btn"
@@ -343,24 +440,6 @@ export const Header = ({
                         </span>
                     )}
                 </Button>
-                <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={onShowHelp}
-                    className="text-zinc-300 hover:text-white hover:bg-surface-2 hidden sm:inline-flex"
-                    data-testid="header-help-btn"
-                >
-                    <Info className="w-4 h-4 mr-1.5" /> Help
-                </Button>
-                <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => setConfirmOpen(true)}
-                    className="text-zinc-300 hover:text-white hover:bg-surface-2"
-                    data-testid="header-reset-btn"
-                >
-                    <RotateCcw className="w-4 h-4 mr-1.5" /> Reset
-                </Button>
                 <a
                     href={COURSE_URL}
                     target="_blank"
@@ -370,9 +449,64 @@ export const Header = ({
                 >
                     Course
                 </a>
+                <div className="relative ml-1" ref={menuRef}>
+                    <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setMenuOpen((o) => !o)}
+                        className={
+                            "text-zinc-300 hover:text-white hover:bg-surface-2 px-2 " +
+                            (menuOpen ? "bg-surface-2 text-white" : "")
+                        }
+                        data-testid="header-menu-btn"
+                        title="Settings & help"
+                        aria-label="Settings & help"
+                        aria-haspopup="menu"
+                        aria-expanded={menuOpen}
+                    >
+                        <Menu className="w-4 h-4" />
+                    </Button>
+                    {menuOpen && (
+                        <motion.div
+                            initial={{ opacity: 0, y: -4 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            transition={{ duration: 0.12, ease: "easeOut" }}
+                            role="menu"
+                            className="absolute right-0 top-full mt-2 w-60 rounded-lg border border-surface-3 bg-surface-1 shadow-xl shadow-black/40 p-1"
+                            data-testid="header-menu"
+                        >
+                            {menuItems.map((m) => (
+                                <button
+                                    key={m.testid}
+                                    role="menuitem"
+                                    onClick={() => {
+                                        if (!m.keepOpen) setMenuOpen(false);
+                                        m.onClick();
+                                    }}
+                                    className="w-full flex items-center gap-2.5 px-2.5 h-9 rounded-md text-sm text-zinc-200 hover:bg-surface-2 focus-visible:bg-surface-2 outline-none"
+                                    data-testid={m.testid}
+                                >
+                                    <m.icon
+                                        className={
+                                            "w-4 h-4 " +
+                                            (m.muted ? "text-zinc-500" : "text-yellow")
+                                        }
+                                    />
+                                    <span className="flex-1 text-left">{m.label}</span>
+                                    {m.hint && (
+                                        <span className="text-[10px] text-zinc-500">
+                                            {m.hint}
+                                        </span>
+                                    )}
+                                </button>
+                            ))}
+                        </motion.div>
+                    )}
+                </div>
             </div>
 
             {resetDialog}
+            {iosHelpDialog}
         </header>
     );
 };

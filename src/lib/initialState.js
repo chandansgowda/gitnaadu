@@ -100,7 +100,11 @@ Try them inside the portfolio-website folder!
 });
 
 export const WELCOME_LINES = [
-    { kind: "system", text: "GitNaadu Terminal v1.0  ·  Engineering in Kannada" },
+    {
+        kind: "system",
+        text: "GitNaadu Terminal v1.0 by ",
+        link: { text: "Engineering in Kannada", href: "https://www.youtube.com/@EngineeringinKannada" },
+    },
     { kind: "system", text: "A safe sandbox to learn Git visually." },
     { kind: "muted", text: "Type `help` to see available commands." },
     { kind: "muted", text: "" },

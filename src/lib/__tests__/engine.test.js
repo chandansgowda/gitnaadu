@@ -64,6 +64,22 @@ describe("shell parser", () => {
         expect(run(fresh(), "pwd || echo skipped").last.output.some((l) => l.text === "skipped")).toBe(false);
     });
 
+    test("ls hides dotfiles; ls -a shows them plus the repo's .git", () => {
+        const names = (r) => r.last.output[0].items.map((it) => it.name);
+        let s = run(fresh(), "mkdir proj", "cd proj", "touch .env a.txt").state;
+        expect(names(run(s, "ls"))).toEqual(["a.txt"]);
+        expect(names(run(s, "ls -a"))).toEqual([".", "..", ".env", "a.txt"]);
+        s = run(s, "git init").state;
+        expect(names(run(s, "ls"))).toEqual(["a.txt"]);
+        expect(names(run(s, "ls -a"))).toEqual([".", "..", ".git", ".env", "a.txt"]);
+        expect(names(run(s, "ls -A"))).toEqual([".git", ".env", "a.txt"]);
+        expect(names(run(s, "ls .git"))).toContain("HEAD");
+        expect(run(s, "ls -la").text).toMatch(/drwxr-xr-x .* \.git\//);
+        // .git isn't a real folder, so it never shows up as untracked
+        expect(run(s, "git status").text).not.toContain(".git");
+        expect(run(s, "cd .git").last.output[0].kind).toBe("err");
+    });
+
     test("pipes give a clear error", () => {
         expect(run(fresh(), "ls | cat").text).toMatch(/pipes/);
     });
@@ -140,6 +156,78 @@ describe("revisions", () => {
         expect(resolveRev(repo, "HEAD^2")).toBe(merge.parents[1]);
         expect(repo.commits[resolveRev(repo, "HEAD^2~1")].message).toBe("base");
         expect(resolveRev(repo, "HEAD^3")).toBeNull();
+    });
+});
+
+describe("git diff revisions", () => {
+    // main: f.txt = a,b,c then g.txt; feature (from base): f.txt line b → B
+    const forked = () =>
+        run(
+            withRepo(),
+            "git checkout -b feature",
+            'echo "a\nB\nc" > f.txt',
+            'git commit -am "edit f"',
+            "git checkout main",
+            "echo g > g.txt",
+            "git add .",
+            'git commit -m "add g"',
+        ).state;
+    const files = (r) => r.last.output.filter((l) => /^--- /.test(l.text)).map((l) => l.text.split(/\s+/)[1]);
+
+    test("A..B compares the two branch tips", () => {
+        const s = forked();
+        const r = run(s, "git diff main..feature");
+        expect(r.last.highlight?.kind).toBe("git-diff");
+        expect(files(r).sort()).toEqual(["f.txt", "g.txt"]);
+        expect(r.text).toContain("+ B");
+        // same as the two-argument form
+        expect(run(s, "git diff main feature").text).toBe(r.text);
+    });
+
+    test("A...B compares B with the merge base", () => {
+        const r = run(forked(), "git diff main...feature");
+        expect(files(r)).toEqual(["f.txt"]);
+    });
+
+    test("an empty side means HEAD", () => {
+        const s = forked();
+        expect(run(s, "git diff feature..").text).toBe(run(s, "git diff feature..HEAD").text);
+        expect(run(s, "git diff ..feature").text).toBe(run(s, "git diff HEAD..feature").text);
+    });
+
+    test("unknown side errors; identical sides show no changes", () => {
+        const s = forked();
+        expect(run(s, "git diff main..nope").last.output[0].kind).toBe("err");
+        expect(run(s, "git diff main..main").text).toBe("(no changes)");
+    });
+
+    test("revisions before -- and paths after it", () => {
+        const s = forked();
+        expect(files(run(s, "git diff main..feature -- f.txt"))).toEqual(["f.txt"]);
+        expect(files(run(s, "git diff HEAD~1 -- g.txt"))).toEqual(["g.txt"]);
+        expect(run(s, "git diff nope -- f.txt").last.output[0].kind).toBe("err");
+    });
+
+    test("git log takes a revision or a range", () => {
+        const s = forked();
+        const msgs = (line) => run(s, `git log --oneline ${line}`).last.output.map((l) => l.text.replace(/^\S+ (\(.*?\) )?/, ""));
+        expect(msgs("")).toEqual(["add g", "base"]);
+        expect(msgs("feature")).toEqual(["edit f", "base"]);
+        expect(msgs("main..feature")).toEqual(["edit f"]);
+        expect(msgs("feature..main")).toEqual(["add g"]);
+        expect(msgs("main...feature").sort()).toEqual(["add g", "edit f"]);
+        expect(run(s, "git log main..main").text).toBe("(no commits in that range)");
+        expect(run(s, "git log main..nope").last.output[0].kind).toBe("err");
+        expect(msgs("-n 1")).toEqual(["add g"]);
+    });
+
+    test("paths with .. still work as paths", () => {
+        let s = run(withRepo(), "mkdir sub", "cd sub").state;
+        s = run(s, "echo z >> ../f.txt").state;
+        expect(files(run(s, "git diff ../f.txt"))).toEqual(["f.txt"]);
+        s = run(s, "cd ..", "git add .", 'git commit -m "z"', "rm f.txt", "cd sub").state;
+        expect(files(run(s, "git diff ../f.txt"))).toEqual(["f.txt"]);
+        expect(files(run(s, "git diff"))).toEqual(["f.txt"]);
     });
 });
 
@@ -265,6 +353,23 @@ describe("remote", () => {
 describe("restore", () => {
     test("--staged on an unknown path is an error", () => {
         expect(run(withRepo(), "git restore --staged nope.txt").last.failed).toBe(true);
+    });
+
+    test("counts only the files it actually changes", () => {
+        let s = run(withRepo(), "touch b.txt c.txt", "git add .", 'git commit -m "more"').state;
+        s = run(s, 'echo "hello" >> f.txt').state;
+        let r = run(s, "git restore .");
+        expect(r.text).toBe("Restored 1 file(s)");
+        expect(read(r.state, "f.txt")).toBe("a\nb\nc\n");
+        // a deleted file counts too
+        r = run(r.state, "rm b.txt", 'echo "x" > c.txt', "git restore .");
+        expect(r.text).toBe("Restored 2 file(s)");
+        expect(read(r.state, "b.txt")).toBe("");
+        // nothing changed: says so, still succeeds
+        r = run(r.state, "git restore .");
+        expect(r.text).toMatch(/Nothing to restore/);
+        expect(r.last.failed).toBeFalsy();
+        expect(r.last.highlight?.kind).toBe("git-restore");
     });
 });
 
