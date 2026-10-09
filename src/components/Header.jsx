@@ -15,12 +15,16 @@ import {
     Menu,
     Bell,
     BellOff,
+    Download,
+    Share,
+    SquarePlus,
 } from "lucide-react";
 import { Button } from "./ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "./ui/dialog";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "./ui/sheet";
 import { useEffect, useRef, useState } from "react";
 import { Credits } from "./Credits";
+import { useInstall } from "../hooks/useInstall";
 
 const COURSE_URL = "https://www.youtube.com/@EngineeringinKannada";
 
@@ -45,7 +49,9 @@ export const Header = ({
 }) => {
     const [confirmOpen, setConfirmOpen] = useState(false);
     const [menuOpen, setMenuOpen] = useState(false);
+    const [iosHelpOpen, setIosHelpOpen] = useState(false);
     const menuRef = useRef(null);
+    const { canInstall, install } = useInstall();
 
     // Close the desktop dropdown on an outside click or Escape.
     useEffect(() => {
@@ -66,6 +72,15 @@ export const Header = ({
 
     // Settings menu, shared by the desktop dropdown and the phone sheet.
     const menuItems = [
+        canInstall && {
+            icon: Download,
+            label: "Install app",
+            hint: isMobile ? "Add to home screen" : undefined,
+            onClick: async () => {
+                if ((await install()) === "ios") setIosHelpOpen(true);
+            },
+            testid: "header-install-btn",
+        },
         {
             icon: soundEnabled ? Volume2 : VolumeX,
             label: soundEnabled ? "Sound on" : "Sound off",
@@ -96,7 +111,63 @@ export const Header = ({
             onClick: () => setConfirmOpen(true),
             testid: "header-reset-btn",
         },
-    ];
+    ].filter(Boolean);
+
+    const iosHelpDialog = (
+        <Dialog open={iosHelpOpen} onOpenChange={setIosHelpOpen}>
+            <DialogContent
+                className="w-[calc(100%-2rem)] rounded-xl bg-surface-1 border-surface-3 text-white"
+                data-testid="install-ios-dialog"
+            >
+                <DialogHeader>
+                    <DialogTitle className="font-black tracking-tight text-left pr-6">
+                        Install GitNaadu
+                    </DialogTitle>
+                </DialogHeader>
+                <p className="text-sm text-zinc-400">
+                    Add GitNaadu to your home screen to open it like an app —
+                    full screen, and it works offline.
+                </p>
+                <ol className="space-y-3 text-sm text-zinc-200">
+                    <li className="flex items-center gap-3">
+                        <span className="w-6 h-6 rounded-full bg-yellow text-black text-xs font-bold flex items-center justify-center flex-shrink-0">
+                            1
+                        </span>
+                        <span>
+                            Tap the <b>Share</b> button{" "}
+                            <Share className="inline w-4 h-4 -mt-1 text-sky-400" /> in
+                            the browser toolbar
+                        </span>
+                    </li>
+                    <li className="flex items-center gap-3">
+                        <span className="w-6 h-6 rounded-full bg-yellow text-black text-xs font-bold flex items-center justify-center flex-shrink-0">
+                            2
+                        </span>
+                        <span>
+                            Choose <b>Add to Home Screen</b>{" "}
+                            <SquarePlus className="inline w-4 h-4 -mt-1 text-zinc-300" />
+                        </span>
+                    </li>
+                    <li className="flex items-center gap-3">
+                        <span className="w-6 h-6 rounded-full bg-yellow text-black text-xs font-bold flex items-center justify-center flex-shrink-0">
+                            3
+                        </span>
+                        <span>
+                            Tap <b>Add</b>
+                        </span>
+                    </li>
+                </ol>
+                <div className="flex justify-end pt-1">
+                    <Button
+                        className="bg-yellow text-black hover:bg-yellow/90"
+                        onClick={() => setIosHelpOpen(false)}
+                    >
+                        Got it
+                    </Button>
+                </div>
+            </DialogContent>
+        </Dialog>
+    );
 
     const resetDialog = (
         <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
@@ -272,6 +343,7 @@ export const Header = ({
                     </SheetContent>
                 </Sheet>
                 {resetDialog}
+                {iosHelpDialog}
             </header>
         );
     }
@@ -434,6 +506,7 @@ export const Header = ({
             </div>
 
             {resetDialog}
+            {iosHelpDialog}
         </header>
     );
 };

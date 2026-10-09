@@ -10,14 +10,10 @@ root.render(
   </React.StrictMode>,
 );
 
-// An earlier build registered an offline service worker. Remove it (and its
-// caches) from devices that still have it.
-if ("serviceWorker" in navigator) {
-  navigator.serviceWorker.getRegistrations().then((regs) => regs.forEach((r) => r.unregister())).catch(() => {});
-  if (window.caches) {
-    caches
-      .keys()
-      .then((keys) => keys.filter((k) => k.startsWith("gitnaadu-")).forEach((k) => caches.delete(k)))
-      .catch(() => {});
-  }
+// Offline support for the installed app. Dev builds skip it so the service
+// worker never serves stale bundles during development.
+if (process.env.NODE_ENV === "production" && "serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/sw.js").catch(() => {});
+  });
 }
