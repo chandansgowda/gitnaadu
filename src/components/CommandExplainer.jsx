@@ -58,6 +58,7 @@ const EXPLAIN = {
     "git-revert": {
         icon: RotateCcw,
         title: "Commit reverted",
+        titleMany: "commits reverted",
         body: "A new commit was created that undoes the changes of the target commit. History stays linear and safe.",
     },
     "git-push": {
@@ -88,6 +89,7 @@ const EXPLAIN = {
     "git-cherry-pick": {
         icon: Cherry,
         title: "Commit cherry-picked",
+        titleMany: "commits cherry-picked",
         body: "The changes from another commit were copied onto your current branch as a brand new commit.",
     },
     "git-diff": {
@@ -169,7 +171,9 @@ export const CommandExplainer = ({ highlight, onClose, className, action }) => {
                             <div className="flex-1 min-w-0">
                                 <div className="flex items-baseline gap-2 mb-1">
                                     <h3 className="font-bold text-white text-sm tracking-tight">
-                                        {cfg.title}
+                                        {highlight.count > 1 && cfg.titleMany
+                                            ? `${highlight.count} ${cfg.titleMany}`
+                                            : cfg.title}
                                     </h3>
                                     {highlight.hash && (
                                         <code className="text-[10px] font-mono text-yellow">
