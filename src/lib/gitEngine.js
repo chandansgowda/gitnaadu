@@ -1074,8 +1074,11 @@ export const gitRestore = (fsRoot, repo, path, opts = {}) => {
     if (!dirNode) return { error: "fatal: repository folder is missing" };
     const targets = Object.keys(src).filter(matches);
     if (targets.length === 0) return { error: `error: pathspec '${path}' did not match any file(s) known to git` };
-    for (const rel of targets) writeRel(dirNode, rel, src[rel]);
-    return { ok: true, restored: targets.length };
+    // Only files that differ (edited or deleted) actually get restored.
+    const working = workingSnapshot(fsRoot, repo);
+    const changed = targets.filter((rel) => at(working, rel) !== src[rel]);
+    for (const rel of changed) writeRel(dirNode, rel, src[rel]);
+    return { ok: true, restored: changed.length };
 };
 
 // git rm

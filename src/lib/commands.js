@@ -1156,11 +1156,11 @@ GIT_HANDLERS.restore = withRepo((state, repo, args) => {
         if (one.error) return { state, output: errLines(one.error) };
         count += (staged ? one.unstaged : one.restored) || 0;
     }
-    return {
-        state,
-        output: [ok(staged ? `Unstaged ${count} change(s)` : `Restored ${count} file(s)`)],
-        highlight: { kind: "git-restore", path: rest[0] },
-    };
+    const line =
+        count === 0
+            ? muted(staged ? "Nothing to unstage" : "Nothing to restore: no changes in those files")
+            : ok(staged ? `Unstaged ${count} change(s)` : `Restored ${count} file(s)`);
+    return { state, output: [line], highlight: { kind: "git-restore", path: rest[0] } };
 });
 
 GIT_HANDLERS.rm = withRepo((state, repo, args) => {

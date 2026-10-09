@@ -354,6 +354,23 @@ describe("restore", () => {
     test("--staged on an unknown path is an error", () => {
         expect(run(withRepo(), "git restore --staged nope.txt").last.failed).toBe(true);
     });
+
+    test("counts only the files it actually changes", () => {
+        let s = run(withRepo(), "touch b.txt c.txt", "git add .", 'git commit -m "more"').state;
+        s = run(s, 'echo "hello" >> f.txt').state;
+        let r = run(s, "git restore .");
+        expect(r.text).toBe("Restored 1 file(s)");
+        expect(read(r.state, "f.txt")).toBe("a\nb\nc\n");
+        // a deleted file counts too
+        r = run(r.state, "rm b.txt", 'echo "x" > c.txt', "git restore .");
+        expect(r.text).toBe("Restored 2 file(s)");
+        expect(read(r.state, "b.txt")).toBe("");
+        // nothing changed: says so, still succeeds
+        r = run(r.state, "git restore .");
+        expect(r.text).toMatch(/Nothing to restore/);
+        expect(r.last.failed).toBeFalsy();
+        expect(r.last.highlight?.kind).toBe("git-restore");
+    });
 });
 
 describe("merge3", () => {
