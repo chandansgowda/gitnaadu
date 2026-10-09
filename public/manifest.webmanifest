@@ -2,7 +2,6 @@
   "name": "GitNaadu: Git Playground",
   "short_name": "GitNaadu",
   "description": "A browser-only Git simulator and learning playground.",
-  "id": "/",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
