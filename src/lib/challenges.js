@@ -92,7 +92,7 @@ const commandsRunAtLeast = (n) => ({ state }) =>
     (state.history?.length || 0) >= n;
 
 const PROJECT = "/home/student/portfolio-website";
-const PYPROJECT = "/home/student/python-project";
+const SECOND_PROJECT = "/home/student/second-project";
 
 export const CHALLENGES = [
     // ======================= BEGINNER (Linux essentials) =======================
@@ -538,23 +538,28 @@ export const CHALLENGES = [
         title: "A second repo",
         difficulty: "beginner",
         intro:
-            "You can have many independent git repos on one machine. Let's set up `python-project` as a separate repo.",
+            "The Python project is already a Git repository. Create `second-project` to see how independent repositories live side by side.",
         steps: [
             {
-                text: "Move into the python-project folder.",
-                hint: "cd ~/python-project",
-                check: cwdIs(PYPROJECT),
+                text: "Create and enter a new project folder.",
+                hint: "mkdir ~/second-project && cd ~/second-project",
+                check: cwdIs(SECOND_PROJECT),
             },
             {
                 text: "Initialize git here.",
                 hint: "git init",
-                check: repoAt(PYPROJECT),
+                check: repoAt(SECOND_PROJECT),
             },
             {
-                text: "Stage everything and commit.",
-                hint: 'git add . && git commit -m "initial python project"',
+                text: "Create a file and stage it.",
+                hint: 'echo "# Second project" > README.md && git add .',
+                check: lastKindIs("git-add"),
+            },
+            {
+                text: "Commit the staged file.",
+                hint: 'git commit -m "initial second project"',
                 check: all(lastKindIs("git-commit"), ({ state }) => {
-                    const repo = state.repos?.[PYPROJECT];
+                    const repo = state.repos?.[SECOND_PROJECT];
                     return repo && Object.keys(repo.commits || {}).length >= 1;
                 }),
             },

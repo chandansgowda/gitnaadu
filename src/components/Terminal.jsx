@@ -4,7 +4,8 @@ import {
     Terminal as TerminalIcon,
     CornerDownLeft,
 } from "lucide-react";
-import { executeCommand, tabComplete } from "../lib/commands";
+import { autoSuggest, executeCommand, getCloneUrl, tabComplete } from "../lib/commands";
+import { fetchGitHubClone } from "../lib/githubClone";
 import { WELCOME_LINES } from "../lib/initialState";
 import { isTouchDevice } from "../hooks/useViewport";
 
@@ -100,10 +101,14 @@ export const Terminal = ({
     focusSignal = 0,
 }) => {
     const [input, setInput] = useState("");
+    const [cursorPosition, setCursorPosition] = useState(0);
+    const [isRunning, setIsRunning] = useState(false);
     const [historyIdx, setHistoryIdx] = useState(-1);
     const [draft, setDraft] = useState("");
     const containerRef = useRef(null);
     const inputRef = useRef(null);
+    const stateRef = useRef(state);
+    stateRef.current = state;
 
     const scrollToBottom = () => {
         if (containerRef.current) {
@@ -138,7 +143,8 @@ export const Terminal = ({
         scrollToBottom();
     }, [focusSignal]);
 
-    const submit = () => {
+    const submit = async () => {
+        if (isRunning) return;
         const raw = input;
         if (!raw.trim()) {
             // empty enter just adds new prompt line
@@ -153,7 +159,20 @@ export const Terminal = ({
             onSound?.("enter");
             return;
         }
-        const { state: nextState, output, highlight } = executeCommand(state, raw);
+        let cloneSource;
+        const cloneUrl = getCloneUrl(raw);
+        if (cloneUrl) {
+            setIsRunning(true);
+            try {
+                cloneSource = await fetchGitHubClone(cloneUrl);
+            } catch (error) {
+                cloneSource = { error: error.message || "GitHub clone failed." };
+            } finally {
+                setIsRunning(false);
+            }
+        }
+        const commandState = stateRef.current;
+        const { state: nextState, output, highlight } = executeCommand(commandState, raw, { cloneSource });
         if (highlight) onHighlight?.(highlight);
 
         // `clear` wipes the screen, but output printed after it in the same
@@ -165,24 +184,24 @@ export const Terminal = ({
         // screen would be completely blank — show the welcome banner instead.
         const linesToAdd = hasClear
             ? [...(isMobile ? WELCOME_LINES : []), ...output.slice(lastClear + 1)]
-            : [{ kind: "prompt", cwd: state.cwd, branch, text: raw }, ...output];
+            : [{ kind: "prompt", cwd: commandState.cwd, branch, text: raw }, ...output];
         setState(
             {
                 ...nextState,
-                history: [...nextState.history, raw],
-                lines: hasClear ? linesToAdd : [...state.lines, ...linesToAdd],
+                history: [...commandState.history, raw],
+                lines: hasClear ? linesToAdd : [...commandState.lines, ...linesToAdd],
                 lastHighlight: highlight || nextState.lastHighlight,
                 stats: {
                     ...nextState.stats,
                     commands: (nextState.stats?.commands || 0) + 1,
                     commits:
                         highlight?.kind === "git-commit"
-                            ? (nextState.stats?.commits || 0) + 1
-                            : nextState.stats?.commits || 0,
+                            ? (commandState.stats?.commits || 0) + 1
+                            : commandState.stats?.commits || 0,
                     branches:
                         highlight?.kind === "git-branch"
-                            ? (nextState.stats?.branches || 0) + 1
-                            : nextState.stats?.branches || 0,
+                            ? (commandState.stats?.branches || 0) + 1
+                            : commandState.stats?.branches || 0,
                 },
             },
             { record: true },
@@ -216,9 +235,27 @@ export const Terminal = ({
         }
     };
 
-    const complete = () => setInput(tabComplete(state, input));
+    const suggestion =
+        cursorPosition === input.length ? autoSuggest(state, input) : "";
+    const acceptSuggestion = () => {
+        if (!suggestion) return false;
+        const nextInput = input + suggestion;
+        setInput(nextInput);
+        setCursorPosition(nextInput.length);
+        return true;
+    };
+    const complete = () => {
+        if (acceptSuggestion()) return;
+        const nextInput = tabComplete(state, input);
+        setInput(nextInput);
+        setCursorPosition(nextInput.length);
+    };
 
     const onKeyDown = (e) => {
+        if (e.key === "ArrowRight" && inputRef.current?.selectionStart === input.length && acceptSuggestion()) {
+            e.preventDefault();
+            return;
+        }
         if (e.key === "Enter") {
             e.preventDefault();
             submit();
@@ -262,30 +299,53 @@ export const Terminal = ({
         return <Line key={idx} line={l} />;
     };
 
+    // The overlay and the input share the same left padding so the typed text,
+    // the ghost suggestion and the caret all start from the same x position.
     const inputEl = (
-        <input
-            ref={inputRef}
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={onKeyDown}
-            spellCheck={false}
-            autoCorrect="off"
-            autoCapitalize="off"
-            autoComplete="off"
-            enterKeyHint="send"
-            className={
-                "flex-1 min-w-0 bg-transparent border-0 outline-none font-mono text-white caret-yellow placeholder:text-zinc-600 " +
-                // 16px on phones stops iOS from zooming into the input.
-                (isMobile ? "text-base" : "text-sm pl-1")
-            }
-            placeholder={
-                isMobile
-                    ? "type a command…"
-                    : "try `ls`, `cd portfolio-website`, `git init`…"
-            }
-            aria-label="Terminal command"
-            data-testid="terminal-input"
-        />
+        <div className="relative flex-1 min-w-0">
+            {suggestion && (
+                <div
+                    aria-hidden="true"
+                    className={`absolute inset-0 flex items-center overflow-hidden whitespace-pre pointer-events-none font-mono ${
+                        isMobile ? "text-base leading-6" : "text-sm leading-5 pl-1"
+                    }`}
+                    data-testid="terminal-suggestion"
+                >
+                    <span className="invisible">{input}</span>
+                    {/* 2px gap so the caret doesn't sit on top of the first ghost glyph */}
+                    <span className="ml-0.5 text-zinc-500">{suggestion}</span>
+                </div>
+            )}
+            <input
+                ref={inputRef}
+                value={input}
+                onChange={(e) => {
+                    setInput(e.target.value);
+                    setCursorPosition(e.target.selectionStart);
+                }}
+                onSelect={(e) => setCursorPosition(e.target.selectionStart)}
+                onKeyUp={(e) => setCursorPosition(e.currentTarget.selectionStart)}
+                onKeyDown={onKeyDown}
+                disabled={isRunning}
+                spellCheck={false}
+                autoCorrect="off"
+                autoCapitalize="off"
+                autoComplete="off"
+                enterKeyHint="send"
+                className={
+                    "relative z-10 w-full min-w-0 bg-transparent border-0 outline-none font-mono text-white caret-yellow placeholder:text-zinc-600 " +
+                    // 16px on phones stops iOS from zooming into the input.
+                    (isMobile ? "text-base h-6 leading-6" : "text-sm h-5 leading-5 pl-1")
+                }
+                placeholder={
+                    isMobile
+                        ? "type a command…"
+                        : "try `ls`, `cd portfolio-website`, `git init`…"
+                }
+                aria-label="Terminal command"
+                data-testid="terminal-input"
+            />
+        </div>
     );
 
     return (
@@ -341,6 +401,7 @@ export const Terminal = ({
                                 e.stopPropagation();
                                 submit();
                             }}
+                            disabled={isRunning}
                             className="w-11 h-11 flex-shrink-0 flex items-center justify-center rounded-xl bg-yellow text-black active:bg-yellow/80"
                             aria-label="Run command"
                             data-testid="terminal-run-btn"

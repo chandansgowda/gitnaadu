@@ -25,7 +25,7 @@
 // All maps are plain objects keyed by user-chosen names, so lookups go
 // through `has` / `get` (see objects.js) instead of `in` / `obj[key]`.
 
-import { getNode, walkFiles, ensureDir } from "./filesystem";
+import { getNode, walkFiles, ensureDir, nameError } from "./filesystem";
 import { has, get } from "./objects";
 import { mergeTrees } from "./merge3";
 
@@ -1374,8 +1374,16 @@ export const gitPull = (fsRoot, repo, branch, remote) => {
     return { ok: true, ff: !!r.ff, hash: r.hash };
 };
 
-export const gitClone = (fsRoot, url, parentDir = "/home/student") => {
-    const name = (url.replace(/\/+$/, "").split("/").pop() || "repo").replace(/\.git$/, "") || "repo";
+export const gitClone = (fsRoot, url, parentDir = "/home/student", source = null) => {
+    const name = source?.name || (url.replace(/\/+$/, "").split("/").pop() || "repo").replace(/\.git$/, "") || "repo";
+    const invalidName = nameError(name);
+    if (invalidName || name.includes("/") || name.includes("\\")) {
+        return { error: `fatal: ${invalidName || `invalid repository name '${name}'`}` };
+    }
+    if (source) {
+        const invalidBranch = nameError(source.branch);
+        if (invalidBranch) return { error: `fatal: invalid default branch: ${invalidBranch}` };
+    }
     const path = (parentDir === "/" ? "" : parentDir) + "/" + name;
     if (getNode(fsRoot, path))
         return { error: `fatal: destination path '${name}' already exists and is not an empty directory.` };
@@ -1383,6 +1391,32 @@ export const gitClone = (fsRoot, url, parentDir = "/home/student") => {
     const repo = newRepo(path);
     repo.remotes.origin.url = url;
     repo.remote.url = url;
+    if (source) {
+        const commits = source.commits || [];
+        const included = new Set(commits.map((commit) => commit.hash));
+        for (const commit of commits) {
+            repo.commits[commit.hash] = {
+                ...commit,
+                parents: (commit.parents || []).filter((parent) => included.has(parent)),
+                branch: source.branch,
+            };
+        }
+        repo.HEAD = { type: "branch", ref: source.branch };
+        repo.branches = {};
+        repo.remote.branches = {};
+        repo.remote.commits = { ...repo.commits };
+        repo.remoteRefs = {};
+        repo.branchColors = { [source.branch]: COLORS[0] };
+        const head = commits[0];
+        if (head) {
+            repo.branches[source.branch] = head.hash;
+            repo.remote.branches[source.branch] = head.hash;
+            repo.remoteRefs[`origin/${source.branch}`] = head.hash;
+            applyCommitToFs(fsRoot, repo, head.hash);
+            reflog(repo, "clone", null, head.hash, url);
+        }
+        return { ok: true, repo, name };
+    }
     const hash = newHash(repo);
     const files = {
         "README.md": `# ${name}\n\nA cloned repository (simulated).\n`,
