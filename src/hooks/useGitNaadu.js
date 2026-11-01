@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { toast } from "sonner";
-import { buildInitialFS, HOME, WELCOME_LINES } from "../lib/initialState";
+import { buildInitialFS, buildInitialRepos, PYTHON_PROJECT, WELCOME_LINES } from "../lib/initialState";
 import { ensureRepoShape } from "../lib/gitEngine";
 
 const STORAGE_KEY = "gitnaadu:v1";
@@ -8,16 +8,19 @@ const MAX_HISTORY = 60; // undo / redo checkpoints
 const MAX_LINES = 1000; // terminal scrollback kept in state
 const MAX_COMMANDS = 500; // ↑ / ↓ command history
 
-const cloneInitial = () => ({
-    fs: buildInitialFS(),
-    cwd: HOME,
-    repos: {},
-    history: [],
-    lines: WELCOME_LINES,
-    lastHighlight: null,
-    stats: { commands: 0, commits: 0, branches: 0 },
-    challenges: { activeId: null, stepIndex: 0, progress: {}, completed: {} },
-});
+const cloneInitial = () => {
+    const fs = buildInitialFS();
+    return {
+        fs,
+        cwd: PYTHON_PROJECT,
+        repos: buildInitialRepos(fs),
+        history: [],
+        lines: WELCOME_LINES,
+        lastHighlight: null,
+        stats: { commands: 0, commits: 0, branches: 0 },
+        challenges: { activeId: null, stepIndex: 0, progress: {}, completed: {} },
+    };
+};
 
 const reviveState = (raw) => {
     try {

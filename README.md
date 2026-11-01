@@ -8,6 +8,20 @@ simulated terminal with a live commit-graph visualizer.
 Everything runs in the browser: the "filesystem", the Git object model, and the
 command parser all live in `src/lib/`.
 
+A fresh or reset playground opens in `~/python-project`, with its sample files
+already committed on the `main` branch.
+
+The terminal shows inline command and path suggestions as you type. Press
+`Tab` or `→` to accept a suggestion; `Tab` still completes paths when there is
+no inline suggestion.
+
+`git clone https://github.com/<owner>/<repo>.git` downloads a public GitHub
+repository directly in the browser. It clones the default branch and its most
+recent 20 commits; other GitHub branches and providers are not included. GitHub
+API limits, binary files, repositories with more than 1,000 files in a commit,
+symlinks, submodules, or histories exceeding 20 MB of unique file contents are
+reported as errors. No backend or GitHub credentials are used.
+
 ## Tech stack
 
 - **React 18** (with React Fast Refresh in dev)

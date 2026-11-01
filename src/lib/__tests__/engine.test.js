@@ -1,6 +1,6 @@
-import { executeCommand } from "../commands";
-import { buildInitialFS, HOME } from "../initialState";
-import { findRepo, resolveRev, headCommit } from "../gitEngine";
+import { autoSuggest, executeCommand, getCloneUrl } from "../commands";
+import { buildInitialFS, buildInitialRepos, HOME, PYTHON_PROJECT } from "../initialState";
+import { findRepo, resolveRev, headCommit, currentBranch } from "../gitEngine";
 import { getNode } from "../filesystem";
 import { merge3 } from "../merge3";
 
@@ -41,6 +41,15 @@ const withRepo = () =>
     ).state;
 
 describe("shell parser", () => {
+    test("suggests matching commands, Git subcommands, and paths", () => {
+        const state = fresh();
+        expect(autoSuggest(state, "gi")).toBe("t");
+        expect(autoSuggest(state, "git cl")).toBe("one");
+        expect(autoSuggest(state, "cd py")).toBe("thon-project/");
+        expect(autoSuggest(state, "unknown")).toBe("");
+        expect(autoSuggest(state, "git ")).toBe("");
+    });
+
     test("quoted > is text, not a redirect", () => {
         const { text } = run(fresh(), 'echo "a > b"');
         expect(text).toBe("a > b");
@@ -131,6 +140,117 @@ describe("filesystem ↔ repo sync", () => {
     test("removing the cwd moves you to an existing parent", () => {
         const { state } = run(withRepo(), "rm -r ../proj");
         expect(state.cwd).toBe(HOME);
+    });
+});
+
+describe("starter Python repository", () => {
+    test("starts on main with the sample files already committed", () => {
+        const fs = buildInitialFS();
+        const repo = buildInitialRepos(fs)[PYTHON_PROJECT];
+        const state = { ...fresh(), fs, cwd: PYTHON_PROJECT, repos: { [PYTHON_PROJECT]: repo } };
+
+        expect(currentBranch(repo)).toBe("main");
+        expect(Object.keys(repo.commits)).toHaveLength(1);
+        expect(run(state, "git status").text).toContain("working tree clean");
+        expect(run(state, "ls").last.output[0].items.map((item) => item.name)).toEqual([
+            "main.py",
+            "requirements.txt",
+        ]);
+    });
+
+    test("supports the screenshot's rename, unsupported command, and help sequence", () => {
+        const fs = buildInitialFS();
+        const state = {
+            ...fresh(),
+            fs,
+            cwd: PYTHON_PROJECT,
+            repos: buildInitialRepos(fs),
+        };
+        const failed = run(
+            state,
+            "mv main.py main1.py",
+            "mv main1.py main.py",
+            "sudo apt install",
+        );
+
+        expect(getNode(failed.state.fs, `${PYTHON_PROJECT}/main.py`).type).toBe("file");
+        expect(getNode(failed.state.fs, `${PYTHON_PROJECT}/main1.py`)).toBeNull();
+        expect(failed.text).toContain("sudo: command not found");
+        expect(failed.text).toContain("type `help` for list of available commands");
+
+        const help = run(failed.state, "help");
+        expect(help.text).toContain("git init");
+        expect(currentBranch(findRepo(help.state.repos, PYTHON_PROJECT))).toBe("main");
+    });
+
+    test("keeps the second-repository lesson usable with the preconfigured starter", () => {
+        const fs = buildInitialFS();
+        const state = {
+            ...fresh(),
+            fs,
+            cwd: PYTHON_PROJECT,
+            repos: buildInitialRepos(fs),
+        };
+        const result = run(
+            state,
+            "mkdir ~/second-project && cd ~/second-project",
+            "git init",
+            'echo "# Second project" > README.md && git add .',
+            'git commit -m "initial second project"',
+        );
+
+        expect(result.last.failed).toBe(false);
+        expect(Object.keys(result.state.repos["/home/student/second-project"].commits)).toHaveLength(1);
+        expect(getNode(result.state.fs, "/home/student/second-project/README.md").content).toBe("# Second project\n");
+    });
+});
+
+describe("git clone", () => {
+    test("imports a downloaded repository and its recent history", () => {
+        const source = {
+            name: "demo",
+            branch: "main",
+            commits: [
+                {
+                    hash: "def5678",
+                    parents: ["abc1234"],
+                    message: "second",
+                    author: "student",
+                    date: "2025-01-02T00:00:00.000Z",
+                    files: { "README.md": "updated\n", "src/index.js": "hello\n" },
+                },
+                {
+                    hash: "abc1234",
+                    parents: [],
+                    message: "first",
+                    author: "student",
+                    date: "2025-01-01T00:00:00.000Z",
+                    files: { "README.md": "initial\n" },
+                },
+            ],
+        };
+        const result = executeCommand(fresh(), "git clone https://github.com/acme/demo.git", {
+            cloneSource: source,
+        });
+        const repo = result.state.repos[`${HOME}/demo`];
+        expect(result.failed).toBe(false);
+        expect(result.state.cwd).toBe(HOME);
+        expect(repo.branches.main).toBe("def5678");
+        expect(repo.commits["def5678"].parents).toEqual(["abc1234"]);
+        expect(getNode(result.state.fs, `${HOME}/demo/README.md`).content).toBe("updated\n");
+        expect(getNode(result.state.fs, `${HOME}/demo/src/index.js`).content).toBe("hello\n");
+        expect(getCloneUrl("git clone -- https://github.com/acme/demo.git && cd demo")).toBe(
+            "https://github.com/acme/demo.git",
+        );
+    });
+
+    test("reports a failed remote download without creating a repository", () => {
+        const result = executeCommand(fresh(), "git clone https://github.com/acme/demo.git", {
+            cloneSource: { error: "GitHub API limit exceeded" },
+        });
+        expect(result.failed).toBe(true);
+        expect(result.output[0].text).toContain("GitHub API limit exceeded");
+        expect(result.state.repos).toEqual({});
     });
 });
 

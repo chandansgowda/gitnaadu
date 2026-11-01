@@ -1,8 +1,10 @@
 // Initial Virtual File System for /home/student
 // Structure: each dir has children: { name: node }, each file has content: string
 // type: 'dir' | 'file'
+import { newRepo, workingSnapshot } from "./gitEngine";
 
 export const HOME = "/home/student";
+export const PYTHON_PROJECT = `${HOME}/python-project`;
 
 export const buildInitialFS = () => ({
     type: "dir",
@@ -98,6 +100,32 @@ Try them inside the portfolio-website folder!
         },
     },
 });
+
+export const buildInitialRepos = (fsRoot) => {
+    const repo = newRepo(PYTHON_PROJECT);
+    const files = workingSnapshot(fsRoot, repo);
+    const hash = "a1b2c3d";
+    const date = "2025-01-01T00:00:00.000Z";
+    repo.commits[hash] = {
+        hash,
+        parents: [],
+        message: "Initial Python project",
+        files,
+        author: "student",
+        date,
+        branch: "main",
+    };
+    repo.branches.main = hash;
+    repo.tracked = { ...files };
+    repo.reflog.unshift({
+        ts: date,
+        op: "commit",
+        oldHash: null,
+        newHash: hash,
+        message: "Initial Python project",
+    });
+    return { [PYTHON_PROJECT]: repo };
+};
 
 export const WELCOME_LINES = [
     {

@@ -194,7 +194,7 @@ const HELP_TEXT = [
     "          git rebase, git cherry-pick, git reset, git revert, git restore, git rm, git mv,",
     "          git stash / pop, git reflog, git push, git pull, git fetch, git clone,",
     "          git remote, git config, git --version",
-    "  Tip:    Press ↑ ↓ for history, Tab for path completion, Ctrl+L to clear.",
+    "  Tip:    Press ↑ ↓ for history, Tab / → to accept suggestions, Ctrl+L to clear.",
 ];
 
 // Each command works on its own copy of the filesystem and repos, so the
@@ -208,7 +208,7 @@ const cloneWorld = (state) => ({
 
 // Run a whole input line. `a && b`, `a || b` and `a ; b` follow shell rules;
 // the last highlight wins.
-export const executeCommand = (state, rawLine) => {
+export const executeCommand = (state, rawLine, { cloneSource } = {}) => {
     const line = (rawLine || "").trim();
     if (!line) return { state, output: [] };
     const parsed = parse(line);
@@ -221,7 +221,7 @@ export const executeCommand = (state, rawLine) => {
     for (const cmd of parsed.cmds) {
         const skip = (connector === "&&" && lastFailed) || (connector === "||" && !lastFailed);
         if (!skip) {
-            const r = runSimple(cur, cmd);
+            const r = runSimple(cur, cmd, cloneSource);
             cur = r.state;
             output = output.concat(r.output || []);
             if (r.highlight) highlight = r.highlight;
@@ -232,9 +232,17 @@ export const executeCommand = (state, rawLine) => {
     return { state: cur, output, highlight, failed: lastFailed };
 };
 
+export const getCloneUrl = (rawLine) => {
+    const parsed = parse((rawLine || "").trim());
+    if (parsed.error) return null;
+    const clones = parsed.cmds.filter((cmd) => cmd.words[0] === "git" && cmd.words[1] === "clone");
+    if (clones.length !== 1) return null;
+    return splitFlags(clones[0].words.slice(2)).rest[0] || null;
+};
+
 const TEXT_KINDS = new Set(["out", "muted", "success", "del"]);
 
-const runSimple = (state, { words, redirect }) => {
+const runSimple = (state, { words, redirect }, cloneSource) => {
     let result;
     if (words.length === 0) {
         result = { state, output: [] }; // bare `> file` just creates / truncates it
@@ -242,7 +250,7 @@ const runSimple = (state, { words, redirect }) => {
         const [cmd, ...args] = words;
         const handler = get(HANDLERS, cmd);
         result = handler
-            ? handler(state, args)
+            ? handler(state, args, cloneSource)
             : { state, output: [err(`${cmd}: command not found`), muted("type `help` for list of available commands")] };
     }
     const nextState = result.state || state;
@@ -511,11 +519,11 @@ HANDLERS.tree = (state, args) => {
 };
 
 // -------- GIT --------
-HANDLERS.git = (state, args) => {
+HANDLERS.git = (state, args, cloneSource) => {
     if (args.length === 0) return { state, output: [muted("usage: git <command> [<args>]")] };
     const dispatch = get(GIT_HANDLERS, args[0]);
     if (!dispatch) return { state, output: [err(`git: '${args[0]}' is not a git command. See 'help'.`)] };
-    return dispatch(state, args.slice(1));
+    return dispatch(state, args.slice(1), cloneSource);
 };
 
 const GIT_HANDLERS = {};
@@ -1003,10 +1011,11 @@ GIT_HANDLERS.pull = withRepo((state, repo, args) => {
     };
 });
 
-GIT_HANDLERS.clone = (state, args) => {
+GIT_HANDLERS.clone = (state, args, cloneSource) => {
     const { rest } = splitFlags(args);
     if (!rest[0]) return { state, output: [err("usage: git clone <url>")] };
-    const r = gitClone(state.fs, rest[0], state.cwd);
+    if (cloneSource?.error) return { state, output: errLines(cloneSource.error) };
+    const r = gitClone(state.fs, rest[0], state.cwd, cloneSource || null);
     if (r.error) return { state, output: errLines(r.error) };
     state.repos[r.repo.path] = r.repo;
     return {
@@ -1227,6 +1236,26 @@ GIT_HANDLERS["--version"] = (state) => ({
 GIT_HANDLERS.version = GIT_HANDLERS["--version"];
 GIT_HANDLERS.help = (state) => ({ state, output: HELP_TEXT.map((l) => muted(l)) });
 GIT_HANDLERS["--help"] = GIT_HANDLERS.help;
+
+export const autoSuggest = (state, line) => {
+    if (!line || /\s$/.test(line)) return "";
+    const firstSpace = line.indexOf(" ");
+    if (firstSpace === -1) {
+        const command = Object.keys(HANDLERS).find((name) => name.startsWith(line) && name !== line);
+        return command ? command.slice(line.length) : "";
+    }
+    if (line.startsWith("git ")) {
+        const subcommand = line.slice(4);
+        if (!/\s/.test(subcommand)) {
+            const match = Object.keys(GIT_HANDLERS).find(
+                (name) => name.startsWith(subcommand) && name !== subcommand,
+            );
+            return match ? match.slice(subcommand.length) : "";
+        }
+    }
+    const completion = tabComplete(state, line);
+    return completion.startsWith(line) ? completion.slice(line.length) : "";
+};
 
 export const tabComplete = (state, line) => {
     if (!line.trim()) return line;

@@ -149,7 +149,7 @@ export default function App() {
         setTab(isMobile ? "terminal" : "git");
         sound.play("toggle");
         toasts.success("Playground reset", {
-            description: "All repos, files and history cleared.",
+            description: "The starter project and initial Git history have been restored.",
         });
     }, [resetState, sound, toasts, isMobile]);
 

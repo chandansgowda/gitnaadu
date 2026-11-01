@@ -68,7 +68,7 @@ const EXPLAIN = {
     "git-clone": {
         icon: Cloud,
         title: "Repository cloned",
-        body: "A full copy of the remote repository was created locally with its history and an initial main branch.",
+        body: "The public GitHub repository's default branch and recent commit history were copied into the virtual filesystem.",
     },
     "git-tag": {
         icon: Tag,
