@@ -1,6 +1,6 @@
 // Commit-graph layout for the Git Tree panel: topological row order plus
 // lane assignment so branches & merges don't overlap.
-import { COLORS, headCommit } from "./gitEngine";
+import { COLORS, headCommit, checkedOutElsewhere } from "./gitEngine";
 import { get } from "./objects";
 
 const newerFirst = (repo) => (a, b) => (repo.commits[a].date < repo.commits[b].date ? 1 : -1);
@@ -14,6 +14,9 @@ const topoOrder = (repo) => {
     for (const h of Object.values(repo.remoteRefs || {})) roots.add(h);
     if (repo.HEAD?.type === "detached") roots.add(repo.HEAD.ref);
     if (repo.merging?.head) roots.add(repo.merging.head);
+    // Other worktrees may sit on a detached commit no ref points at.
+    if (repo.mainHEAD?.type === "detached") roots.add(repo.mainHEAD.ref);
+    for (const w of Object.values(repo.worktrees || {})) if (w.HEAD?.type === "detached") roots.add(w.HEAD.ref);
     const rootArr = [...roots].filter((h) => get(repo.commits, h)).sort(newerFirst(repo));
 
     const visited = new Set();
@@ -154,6 +157,7 @@ export const buildGraph = (repo) => {
         color: get(repo.branchColors, name) || colorByHash[hash] || COLORS[0],
         row: rowByHash[hash],
         kind: "branch",
+        worktree: checkedOutElsewhere(repo, name),
     }));
 
     const remoteRefs = Object.entries(repo.remoteRefs || {}).map(([name, hash]) => ({

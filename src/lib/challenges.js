@@ -8,7 +8,7 @@
 //
 // To add a new challenge, just push another object to CHALLENGES.
 
-import { findRepo, currentBranch, headCommit } from "./gitEngine";
+import { findRepo, currentBranch, headCommit, mainRepoPath } from "./gitEngine";
 import { getNode, normalizePath } from "./filesystem";
 
 // ---- tiny composable check helpers ----
@@ -88,6 +88,17 @@ const lastCommitMessageMatches = (re) => ({ state }) => {
     const msg = h ? repo.commits[h]?.message || "" : "";
     return re.test(msg);
 };
+// Worktrees: `findRepo` gives a view with `worktreeOf` set inside a linked worktree.
+const inWorktree = ({ state }) => Boolean(findRepo(state.repos || {}, state.cwd)?.worktreeOf);
+const inMainWorktree = ({ state }) => {
+    const repo = findRepo(state.repos || {}, state.cwd);
+    return Boolean(repo && !repo.worktreeOf);
+};
+const worktreesHere = (state) => {
+    const repo = findRepo(state.repos || {}, state.cwd);
+    return Object.values(state.repos?.[repo ? mainRepoPath(repo) : ""]?.worktrees || {});
+};
+const hasMissingWorktree = ({ state }) => worktreesHere(state).some((w) => w.missing);
 const commandsRunAtLeast = (n) => ({ state }) =>
     (state.history?.length || 0) >= n;
 
@@ -846,6 +857,118 @@ export const CHALLENGES = [
         ],
         outro:
             "Detached HEAD is just a warning, not a crash. Creating a branch turns this state into a normal branch you can keep working on.",
+    },
+
+    // ======================= WORKTREES =======================
+    {
+        id: "worktree-hotfix",
+        title: "Hotfix in a second worktree",
+        difficulty: "advanced",
+        intro:
+            "Halfway through a feature and an urgent bug comes in? Instead of stashing, `git worktree add` gives you a second folder with its own branch checked out — same repo, same history, no context switch.",
+        steps: [
+            {
+                text: "Be in the main folder of a repo with at least one commit.",
+                hint: "cd ~/portfolio-website (git init + a first commit if needed)",
+                check: all(inMainWorktree, minCommits(1)),
+            },
+            {
+                text: "Add a worktree next to the repo, on a new branch called urgent-fix.",
+                hint: "git worktree add -b urgent-fix ../urgent-fix",
+                check: lastKindIs("git-worktree-add"),
+            },
+            {
+                text: "Step into the new worktree folder.",
+                hint: "cd ../urgent-fix",
+                check: inWorktree,
+            },
+            {
+                text: "Commit a fix there — your main folder is untouched.",
+                hint: 'echo "fixed" > FIX.txt && git add . && git commit -m "urgent fix"',
+                check: all(inWorktree, lastKindIs("git-commit")),
+            },
+            {
+                text: "Go back to the main folder.",
+                hint: "cd ../portfolio-website",
+                check: inMainWorktree,
+            },
+            {
+                text: "Merge the fix — the commit is already here, no push or pull needed.",
+                hint: "git merge urgent-fix",
+                check: all(inMainWorktree, lastKindIs("git-merge")),
+            },
+        ],
+        outro:
+            "Worktrees share one repository: a commit made in any folder is instantly visible in all of them. The Git Tree marks branches checked out in another worktree with a folder icon.",
+    },
+
+    {
+        id: "worktree-one-branch",
+        title: "One branch, one worktree",
+        difficulty: "advanced",
+        intro:
+            "Git lets a branch be checked out in only one worktree at a time — otherwise two folders could move the same branch in different directions. See the rule in action, then free the branch.",
+        steps: [
+            {
+                text: "From the main folder, add a worktree without naming a branch — git creates one named after the folder.",
+                hint: "git worktree add ../experiment",
+                check: all(inMainWorktree, lastKindIs("git-worktree-add")),
+            },
+            {
+                text: "Try to switch to that branch here. Git refuses, because the worktree has it.",
+                hint: "git switch experiment",
+                check: all(cmdMatches(/git\s+(switch|checkout)\s+experiment\b/), ({ state }) => !onBranch("experiment")({ state })),
+            },
+            {
+                text: "List the worktrees to see which folder has which branch.",
+                hint: "git worktree list",
+                check: lastKindIs("git-worktree-list"),
+            },
+            {
+                text: "Remove the experiment worktree (its branch and commits are kept).",
+                hint: "git worktree remove ../experiment",
+                check: lastKindIs("git-worktree-remove"),
+            },
+            {
+                text: "Now the branch is free — switch to it in the main folder.",
+                hint: "git switch experiment",
+                check: all(inMainWorktree, onBranch("experiment")),
+            },
+        ],
+        outro:
+            "`git worktree remove` deletes only the folder. Branches live in the shared repo, so nothing you committed there is lost. (Run `git switch main` to head back.)",
+    },
+
+    {
+        id: "worktree-prune",
+        title: "Prune a stale worktree",
+        difficulty: "advanced",
+        intro:
+            "Deleting a worktree folder with `rm -rf` instead of `git worktree remove` leaves git remembering a worktree that no longer exists — and its branch stays locked. `git worktree prune` cleans that up.",
+        steps: [
+            {
+                text: "Add a scratch worktree.",
+                hint: "git worktree add ../scratch",
+                check: lastKindIs("git-worktree-add"),
+            },
+            {
+                text: "Delete its folder by hand, the wrong way.",
+                hint: "rm -rf ../scratch",
+                check: hasMissingWorktree,
+            },
+            {
+                text: "List the worktrees — git still remembers it and marks it prunable.",
+                hint: "git worktree list",
+                check: all(lastKindIs("git-worktree-list"), hasMissingWorktree),
+            },
+            {
+                text: "Prune the stale entry.",
+                hint: "git worktree prune",
+                check: lastKindIs("git-worktree-prune"),
+            },
+        ],
+        outro:
+            "Prefer `git worktree remove` — it checks for uncommitted work first. `prune` is the clean-up for folders that vanished some other way.",
     },
 ];
 

@@ -1,5 +1,5 @@
 import { motion, AnimatePresence } from "framer-motion";
-import { GitCommit, GitBranch, GitMerge, GitPullRequest, Plus, RotateCcw, Trash2, Cloud, Sparkles, X, Tag, Archive, FileDiff, FileSearch, Edit3, Cherry, History } from "lucide-react";
+import { GitCommit, GitBranch, GitMerge, GitPullRequest, Plus, RotateCcw, Trash2, Cloud, Sparkles, X, Tag, Archive, FileDiff, FileSearch, Edit3, Cherry, History, FolderGit2 } from "lucide-react";
 import { useEffect, useRef } from "react";
 import { cn } from "@/lib/utils";
 
@@ -82,8 +82,43 @@ const EXPLAIN = {
     },
     "git-stash-pop": {
         icon: Archive,
-        title: "Stash applied",
-        body: "The most recent stashed changes were re-applied to your working tree and removed from the stash list.",
+        title: "Stash popped",
+        body: "The stashed changes were re-applied to your working tree and removed from the stash list. Without an argument pop takes the newest (stash@{0}); `git stash pop stash@{2}` picks an older one.",
+    },
+    "git-stash-apply": {
+        icon: Archive,
+        title: "Stash applied (and kept)",
+        body: "Like pop, but the entry stays in `git stash list` — handy when you want the same changes on more than one branch. Remove it later with `git stash drop`.",
+    },
+    "git-stash-drop": {
+        icon: Trash2,
+        title: "Stash entry dropped",
+        body: "That stash entry was deleted without applying it. Newer entries keep their numbers; older ones shift up by one.",
+    },
+    "git-worktree-add": {
+        icon: FolderGit2,
+        title: "Worktree added",
+        body: "A second working folder now checks out its own branch while sharing this repo's history. Commit in either folder and both see the commits. A branch can only be checked out in one worktree at a time.",
+    },
+    "git-worktree-list": {
+        icon: FolderGit2,
+        title: "Worktrees listed",
+        body: "Every working folder of this repo, with the commit and branch each has checked out. The first line is the main working tree.",
+    },
+    "git-worktree-remove": {
+        icon: FolderGit2,
+        title: "Worktree removed",
+        body: "The folder is gone, but its commits and branch are not — they live in the shared repository. Git refuses to remove a worktree with uncommitted work unless you add --force.",
+    },
+    "git-worktree-prune": {
+        icon: FolderGit2,
+        title: "Stale worktrees pruned",
+        body: "These worktree folders were deleted by hand, so Git still remembered them (and kept their branches locked). Pruning forgets them, so those branches can be checked out again.",
+    },
+    "git-worktree-move": {
+        icon: FolderGit2,
+        title: "Worktree moved",
+        body: "The worktree folder was moved and Git updated its records, so it keeps working from its new location.",
     },
     "git-cherry-pick": {
         icon: Cherry,

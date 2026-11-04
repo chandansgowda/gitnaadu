@@ -40,6 +40,8 @@ const TREE_KINDS = new Set([
     "git-cherry-pick",
     "git-tag",
     "git-clone",
+    "git-worktree-add",
+    "git-worktree-remove",
 ]);
 
 // Which workspace view best shows the effect of a highlighted command.

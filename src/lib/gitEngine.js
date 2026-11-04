@@ -17,15 +17,22 @@
 //   reflog:  [ { ts, op, oldHash, newHash, message } ],
 //   stashes: [ { id, message, branch, files, staged, parent, date } ],
 //   config:  { user: { name, email } },
-//   merging: null | { head, label, message, conflicts: [relPath], kinds: { [relPath]: kind } }
+//   merging: null | { head, label, message, conflicts: [relPath], kinds: { [relPath]: kind } },
+//   worktrees: { [absPath]: { HEAD, staged, tracked, merging, reflog, missing? } }
 // }
+//
+// Linked worktrees (`git worktree add`) are extra working folders of the same
+// repo. Each keeps its own HEAD, index (staged / tracked), merge state and
+// HEAD reflog in `repo.worktrees`; everything else (commits, branches, tags,
+// stashes, remote, config) is shared. `findRepo` returns a combined view for
+// a worktree folder, so the rest of the engine sees one ordinary repo object.
 //
 // Commit: { hash, parents:[hash], message, files:{[relPath]:content}, author, date, branch }
 //
 // All maps are plain objects keyed by user-chosen names, so lookups go
 // through `has` / `get` (see objects.js) instead of `in` / `obj[key]`.
 
-import { getNode, walkFiles, ensureDir } from "./filesystem";
+import { getNode, walkFiles, ensureDir, remove, move, baseName } from "./filesystem";
 import { has, get } from "./objects";
 import { mergeTrees } from "./merge3";
 
@@ -82,6 +89,7 @@ export const newRepo = (path) => ({
     stashes: [],
     config: { user: { name: "student", email: "student@gitnaadu" } },
     merging: null,
+    worktrees: {},
 });
 
 // Migration for repos persisted by older versions. Mutates `repo`, so only
@@ -99,19 +107,83 @@ export const ensureRepoShape = (repo) => {
     if (!repo.remoteRefs) repo.remoteRefs = {};
     if (!repo.branchColors) repo.branchColors = { main: COLORS[0] };
     if (repo.merging === undefined) repo.merging = null;
+    if (!repo.worktrees) repo.worktrees = {};
     return repo;
 };
 
-// Innermost repo containing `cwd`. Pure: never modifies the repos.
+export const isUnder = (p, root) => p === root || p.startsWith(root === "/" ? "/" : root + "/");
+
+// One linked worktree of `main` as a repo object: the worktree's own HEAD,
+// index and merge state over the main repo's shared history. Shared maps
+// are the same objects as in `main`, so changes to them land there directly;
+// `saveWorktreeView` stores the rest. `mainHEAD` lets the engine see which
+// branch the main working tree has checked out.
+export const worktreeView = (main, path) => {
+    const wt = get(main.worktrees, path);
+    if (!wt) return null;
+    return {
+        ...main,
+        path,
+        HEAD: wt.HEAD,
+        staged: wt.staged || {},
+        tracked: wt.tracked || {},
+        merging: wt.merging ?? null,
+        reflog: wt.reflog || [],
+        worktreeOf: main.path,
+        mainHEAD: main.HEAD,
+    };
+};
+
+const WORKTREE_KEYS = ["HEAD", "staged", "tracked", "merging", "reflog"];
+
+// Write a worktree view's changes back into its main repo in `repos`. A no-op
+// for a main repo. Mutates `repos`, so only call it on a cloned state.
+export const saveWorktreeView = (repos, view) => {
+    if (!view?.worktreeOf) return;
+    const main = get(repos, view.worktreeOf);
+    if (!main) return;
+    for (const [k, v] of Object.entries(view)) {
+        if (k === "path" || k === "worktreeOf" || k === "mainHEAD" || WORKTREE_KEYS.includes(k)) continue;
+        main[k] = v;
+    }
+    const wt = get(main.worktrees, view.path);
+    if (!wt) return; // the worktree was removed by this very command
+    for (const k of WORKTREE_KEYS) wt[k] = view[k];
+};
+
+// Innermost repo or linked worktree containing `cwd`. Pure: never modifies
+// the repos (a worktree comes back as a fresh view object).
 export const findRepo = (repos, cwd) => {
     let best = null;
+    let bestPath = null;
     for (const r of Object.values(repos || {})) {
-        if (cwd === r.path || cwd.startsWith(r.path === "/" ? "/" : r.path + "/")) {
-            if (!best || r.path.length > best.path.length) best = r;
+        const roots = [r.path, ...Object.keys(r.worktrees || {}).filter((p) => !r.worktrees[p].missing)];
+        for (const p of roots) {
+            if (isUnder(cwd, p) && (!best || p.length > bestPath.length)) {
+                best = r;
+                bestPath = p;
+            }
         }
     }
-    return best;
+    if (!best || bestPath === best.path) return best;
+    return worktreeView(best, bestPath);
 };
+
+// The main repo a repo object belongs to (itself unless it's a worktree view).
+export const mainRepoPath = (repo) => repo.worktreeOf || repo.path;
+
+const onBranch = (HEAD, name) => HEAD?.type === "branch" && HEAD.ref === name;
+
+// Path of the *other* working tree (main or linked) that has branch `name`
+// checked out, or null. A branch can only be checked out in one place.
+export const checkedOutElsewhere = (repo, name) => {
+    if (repo.worktreeOf && onBranch(repo.mainHEAD, name)) return repo.worktreeOf;
+    for (const [p, w] of Object.entries(repo.worktrees || {}))
+        if (p !== repo.path && onBranch(w.HEAD, name)) return p;
+    return null;
+};
+
+const usedByWorktreeError = (name, path) => `fatal: '${name}' is already used by worktree at '${path}'`;
 
 export const relPath = (repo, absPath) => {
     if (absPath === repo.path) return ".";
@@ -181,10 +253,16 @@ const recordCommit = (repo, { files, parents, message, author, op, oldHash, logM
 };
 
 // Snapshot of working files belonging to this repo from VFS.
+// Other working trees of the same repo nested inside this one are skipped:
+// they hold their own checkout, not files of this one.
 export const workingSnapshot = (fsRoot, repo) => {
     const files = walkFiles(fsRoot, repo.path);
+    const nested = [mainRepoPath(repo), ...Object.keys(repo.worktrees || {})].filter(
+        (p) => p !== repo.path && isUnder(p, repo.path),
+    );
     const snap = {};
     for (const f of files) {
+        if (nested.some((p) => isUnder(f.path, p))) continue;
         const r = relPath(repo, f.path);
         if (r === ".") continue;
         snap[r] = f.node.content || "";
@@ -442,6 +520,7 @@ export const gitBranch = (repo, name, opts = {}) => {
             list: Object.keys(repo.branches).map((b) => ({
                 name: b,
                 active: currentBranch(repo) === b,
+                worktree: checkedOutElsewhere(repo, b),
             })),
         };
     }
@@ -449,6 +528,8 @@ export const gitBranch = (repo, name, opts = {}) => {
         if (!has(repo.branches, name)) return { error: `error: branch '${name}' not found.` };
         if (currentBranch(repo) === name)
             return { error: `error: cannot delete branch '${name}' checked out` };
+        const elsewhere = checkedOutElsewhere(repo, name);
+        if (elsewhere) return { error: `error: cannot delete branch '${name}' used by worktree at '${elsewhere}'` };
         const tip = repo.branches[name];
         const merged =
             isAncestor(repo, tip, headCommit(repo)) ||
@@ -478,6 +559,10 @@ export const gitBranch = (repo, name, opts = {}) => {
         repo.branchColors[name] = get(repo.branchColors, from) || COLORS[0];
         delete repo.branchColors[from];
         if (cur === from) repo.HEAD = { type: "branch", ref: name };
+        // Like git, a branch checked out in another worktree follows the rename there.
+        if (repo.worktreeOf && onBranch(repo.mainHEAD, from)) repo.mainHEAD.ref = name;
+        for (const [p, w] of Object.entries(repo.worktrees || {}))
+            if (p !== repo.path && onBranch(w.HEAD, from)) w.HEAD = { type: "branch", ref: name };
         return { ok: true, renamed: { from, to: name } };
     }
     if (has(repo.branches, name)) return { error: `fatal: a branch named '${name}' already exists.` };
@@ -505,6 +590,8 @@ export const gitCheckout = (fsRoot, repo, target, opts = {}) => {
     if (opts.newBranch && has(repo.branches, target))
         return { error: `fatal: a branch named '${target}' already exists` };
     const isBranch = opts.newBranch || has(repo.branches, target);
+    const elsewhere = isBranch && !opts.newBranch && checkedOutElsewhere(repo, target);
+    if (elsewhere) return { error: usedByWorktreeError(target, elsewhere) };
     const hash = opts.newBranch
         ? (opts.start ? resolveRev(repo, opts.start) : headCommit(repo))
         : isBranch
@@ -1004,9 +1091,33 @@ export const gitStash = (fsRoot, repo, message = "WIP") => {
     return { ok: true, id };
 };
 
-export const gitStashPop = (fsRoot, repo) => {
+// `stash@{N}`, a bare `N`, or nothing (the newest, stash@{0}) → index into
+// repo.stashes, or { error }.
+export const stashIndex = (repo, ref) => {
     if (!repo.stashes.length) return { error: "No stash entries found." };
-    const s = repo.stashes[0];
+    if (ref === undefined || ref === null || ref === "" || ref === "stash") return { index: 0 };
+    const m = /^(?:stash@\{(\d+)\}|(\d+))$/.exec(ref);
+    if (!m) return { error: `error: '${ref}' is not a stash reference (try stash@{0} or just 0)` };
+    const index = Number(m[1] ?? m[2]);
+    if (index >= repo.stashes.length)
+        return {
+            error: `error: stash@{${index}} does not exist — there ${
+                repo.stashes.length === 1 ? "is only 1 stash entry" : `are only ${repo.stashes.length} stash entries`
+            } (see \`git stash list\`)`,
+        };
+    return { index };
+};
+
+const stashId = (i) => `stash@{${i}}`;
+
+// `git stash pop [<stash>]`, or `git stash apply [<stash>]` with opts.keep
+// (applies the entry but leaves it in the list).
+export const gitStashPop = (fsRoot, repo, ref, opts = {}) => {
+    const idx = stashIndex(repo, ref);
+    if (idx.error) return idx;
+    const s = repo.stashes[idx.index];
+    const id = stashId(idx.index);
+    const verb = opts.keep ? "stash apply" : "stash pop";
     const dirNode = getNode(fsRoot, repo.path);
     if (!dirNode) return { error: "fatal: repository folder is missing" };
     // Re-apply the stashed changes (relative to the commit they were made on)
@@ -1030,15 +1141,15 @@ export const gitStashPop = (fsRoot, repo) => {
         return {
             error: `CONFLICT (content): the stash and a later commit both changed:\n${headConflicts
                 .map((p) => "  " + p)
-                .join("\n")}\nerror: could not apply ${s.id} — commit or undo the conflicting change first.\nThe stash entry is kept in case you need it again.`,
+                .join("\n")}\nerror: could not apply ${id} — commit or undo the conflicting change first.\nThe stash entry is kept in case you need it again.`,
         };
     if (conflicts.length)
         return {
-            error: `error: Your local changes to the following files would be overwritten by stash pop:\n${conflicts
+            error: `error: Your local changes to the following files would be overwritten by ${verb}:\n${conflicts
                 .map((p) => "  " + p)
                 .join("\n")}\nThe stash entry is kept in case you need it again.`,
         };
-    repo.stashes.shift();
+    if (!opts.keep) repo.stashes.splice(idx.index, 1);
     for (const p of changed) {
         if (has(s.files, p)) writeRel(dirNode, p, s.files[p]);
         else removeRel(dirNode, p);
@@ -1046,7 +1157,14 @@ export const gitStashPop = (fsRoot, repo) => {
     for (const [p, v] of Object.entries(s.staged || {})) {
         if (v !== at(repo.tracked, p)) repo.staged[p] = v;
     }
-    return { ok: true, id: s.id };
+    return { ok: true, id, kept: !!opts.keep };
+};
+
+export const gitStashDrop = (repo, ref) => {
+    const idx = stashIndex(repo, ref);
+    if (idx.error) return idx;
+    repo.stashes.splice(idx.index, 1);
+    return { ok: true, id: stashId(idx.index) };
 };
 
 const pathMatcher = (path) => (p) => path === "." || p === path || p.startsWith(path + "/");
@@ -1123,6 +1241,198 @@ export const gitMv = (fsRoot, repo, src, dst) => {
         writeRel(dirNode, dst, working[src]);
     }
     return { ok: true, dst };
+};
+
+// ---- Worktrees ----
+// `repo` is the repo object of the working tree the command runs in (the
+// main repo or a worktree view); `repos` is state.repos, where the main repo
+// lives. Paths are absolute; `label` is the path as the user typed it.
+
+const mainOf = (repos, repo) => {
+    const main = get(repos, mainRepoPath(repo));
+    if (main && !main.worktrees) main.worktrees = {};
+    return main;
+};
+
+const isDirty = (fsRoot, repo) => {
+    const s = status(fsRoot, repo);
+    return s.staged.length + s.unstaged.length + s.untracked.length + s.unmerged.length > 0;
+};
+
+// Every working tree: the main one first, then linked ones in creation order.
+// → [{ path, branch, hash, main, prunable }]
+export const gitWorktreeList = (repos, repo) => {
+    const main = mainOf(repos, repo);
+    // The tree we're in may hold changes not yet saved back into `main`.
+    const headOf = (path, HEAD) => (path === repo.path ? repo.HEAD : HEAD);
+    const entry = (path, HEAD, extra) => {
+        const h = headOf(path, HEAD);
+        return {
+            path,
+            branch: h.type === "branch" ? h.ref : null,
+            hash: h.type === "branch" ? get(main.branches, h.ref) || null : h.ref,
+            ...extra,
+        };
+    };
+    return [
+        entry(main.path, main.HEAD, { main: true }),
+        ...Object.entries(main.worktrees).map(([p, w]) => entry(p, w.HEAD, { prunable: !!w.missing })),
+    ];
+};
+
+// git worktree add [-b|-B <new>] [--detach] <path> [<commit-ish>]
+// opts: { newBranch, resetBranch, detach, commitish, label }
+export const gitWorktreeAdd = (fsRoot, repos, repo, path, opts = {}) => {
+    const main = mainOf(repos, repo);
+    const label = opts.label || path;
+    const registered = get(main.worktrees, path);
+    if (registered?.missing)
+        return {
+            error:
+                `fatal: '${label}' is a missing but already registered worktree;\n` +
+                `hint: clean it up with 'git worktree prune' (or 'git worktree remove ${label}') first`,
+        };
+    const node = getNode(fsRoot, path);
+    if (path === main.path || registered || (node && (node.type !== "dir" || Object.keys(node.children || {}).length)))
+        return { error: `fatal: '${label}' already exists` };
+    // A branch can be checked out in only one working tree at a time.
+    const usedAt = (name) => (currentBranch(repo) === name ? repo.path : checkedOutElsewhere(repo, name));
+    const inUse = (name) => {
+        const at = usedAt(name);
+        return at
+            ? {
+                  error:
+                      usedByWorktreeError(name, at) +
+                      `\nhint: give the new worktree its own branch with -b <new-branch>, or use --detach`,
+              }
+            : null;
+    };
+    const resolveStart = (rev) => {
+        const h = resolveRev(repo, rev);
+        return h && has(repo.commits, h) ? h : null;
+    };
+    let branch = null;
+    let created = null;
+    let hash;
+    const c = opts.commitish;
+    if (opts.newBranch) {
+        const name = opts.newBranch;
+        const bad = refNameError(name);
+        if (bad) return { error: bad };
+        if (has(repo.branches, name)) {
+            if (!opts.resetBranch) return { error: `fatal: a branch named '${name}' already exists` };
+            const busy = inUse(name);
+            if (busy) return busy;
+        }
+        hash = resolveStart(c || "HEAD");
+        branch = created = name;
+    } else if (opts.detach) {
+        hash = resolveStart(c || "HEAD");
+    } else if (c) {
+        if (has(repo.branches, c)) {
+            const busy = inUse(c);
+            if (busy) return busy;
+            branch = c;
+            hash = repo.branches[c];
+        } else if (resolveStart(c)) {
+            hash = resolveStart(c); // a tag or commit: detached HEAD
+        } else if (has(repo.commits, get(repo.remoteRefs, "origin/" + c))) {
+            // Like git: a name that only exists on origin gets a local branch.
+            branch = created = c;
+            hash = repo.remoteRefs["origin/" + c];
+        }
+    } else {
+        // No branch given: use (or create) one named after the folder.
+        const name = baseName(path);
+        if (has(repo.branches, name)) {
+            const busy = inUse(name);
+            if (busy) return busy;
+            branch = name;
+            hash = repo.branches[name];
+        } else {
+            const bad = refNameError(name);
+            if (bad) return { error: bad };
+            hash = resolveStart("HEAD");
+            branch = created = name;
+        }
+    }
+    if (!hash) {
+        const ref = c || "HEAD";
+        return {
+            error:
+                `fatal: invalid reference: ${ref}` +
+                (headCommit(repo) ? "" : "\nhint: make a first commit — a worktree needs a commit to check out"),
+        };
+    }
+    if (!ensureDir(fsRoot, path)) return { error: `fatal: could not create directory of '${label}'` };
+    if (created) {
+        const isNew = !has(repo.branches, created);
+        repo.branches[created] = hash;
+        if (isNew) repo.branchColors[created] = COLORS[Object.keys(repo.branches).length % COLORS.length];
+    }
+    const files = repo.commits[hash].files;
+    const dir = getNode(fsRoot, path);
+    for (const [rel, content] of Object.entries(files)) writeRel(dir, rel, content);
+    const wt = {
+        HEAD: branch ? { type: "branch", ref: branch } : { type: "detached", ref: hash },
+        staged: {},
+        tracked: { ...files },
+        merging: null,
+        reflog: [],
+    };
+    reflog(wt, "worktree add", null, hash, branch ? `checkout ${branch}` : `detached at ${hash}`);
+    main.worktrees[path] = wt;
+    return { ok: true, path, branch, created, hash, message: firstLine(repo.commits[hash].message) };
+};
+
+// git worktree remove [--force] <path>. The branch it had checked out stays.
+export const gitWorktreeRemove = (fsRoot, repos, repo, path, opts = {}) => {
+    const main = mainOf(repos, repo);
+    const label = opts.label || path;
+    if (path === main.path) return { error: `fatal: '${label}' is a main working tree` };
+    const wt = get(main.worktrees, path);
+    if (!wt) return { error: `fatal: '${label}' is not a working tree` };
+    if (!wt.missing && getNode(fsRoot, path)) {
+        const view = path === repo.path ? repo : worktreeView(main, path);
+        if (!opts.force && isDirty(fsRoot, view))
+            return {
+                error:
+                    `fatal: '${label}' contains modified or untracked files, use --force to delete it\n` +
+                    `hint: or commit / stash that work first (cd into it and run git status)`,
+            };
+        remove(fsRoot, path, { recursive: true });
+    }
+    delete main.worktrees[path];
+    return { ok: true, path, branch: wt.HEAD?.type === "branch" ? wt.HEAD.ref : null };
+};
+
+// git worktree prune: forget worktrees whose folder was deleted by hand.
+export const gitWorktreePrune = (repos, repo) => {
+    const main = mainOf(repos, repo);
+    const pruned = [];
+    for (const [p, w] of Object.entries(main.worktrees)) {
+        if (!w.missing) continue;
+        delete main.worktrees[p];
+        pruned.push(p);
+    }
+    return { ok: true, pruned };
+};
+
+// git worktree move <worktree> <new-path>
+export const gitWorktreeMove = (fsRoot, repos, repo, src, dst, opts = {}) => {
+    const main = mainOf(repos, repo);
+    const label = opts.label || src;
+    if (src === main.path) return { error: `fatal: '${label}' is a main working tree` };
+    const wt = get(main.worktrees, src);
+    if (!wt) return { error: `fatal: '${label}' is not a working tree` };
+    if (wt.missing) return { error: `fatal: '${label}' is missing — run 'git worktree prune' instead` };
+    const target = getNode(fsRoot, dst)?.type === "dir" ? (dst === "/" ? "" : dst) + "/" + baseName(src) : dst;
+    if (getNode(fsRoot, target)) return { error: `fatal: target '${target}' already exists` };
+    const r = move(fsRoot, src, target);
+    if (r.error) return { error: `fatal: ${r.error}` };
+    delete main.worktrees[src];
+    main.worktrees[r.path] = wt;
+    return { ok: true, from: src, to: r.path };
 };
 
 // Reflog

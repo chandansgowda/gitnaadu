@@ -27,7 +27,10 @@ const virtualGitDir = () => ({
     ),
 });
 
-const flatten = (root, isOpen, repoRoots) => {
+// A linked worktree's `.git` is a file pointing back at the main repo.
+const virtualGitFile = () => ({ type: "file", name: ".git", virtual: true });
+
+const flatten = (root, isOpen, repoRoots, worktreeRoots) => {
     const out = [];
     const walk = (node, path, depth) => {
         out.push({ node, path, depth });
@@ -38,6 +41,8 @@ const flatten = (root, isOpen, repoRoots) => {
             });
             if (repoRoots.has(path) && !children.some((c) => c.name === ".git"))
                 children.unshift(virtualGitDir());
+            else if (worktreeRoots.has(path) && !children.some((c) => c.name === ".git"))
+                children.unshift(virtualGitFile());
             for (const child of children) {
                 walk(
                     child,
@@ -77,7 +82,19 @@ export const FileTree = ({ state, repoPath, onOpenFile }) => {
         [state.repos],
     );
 
-    const items = flatten(state.fs, isOpen, repoRoots);
+    const worktreeRoots = useMemo(
+        () =>
+            new Set(
+                Object.values(state.repos || {}).flatMap((r) =>
+                    Object.entries(r.worktrees || {})
+                        .filter(([, w]) => !w.missing)
+                        .map(([p]) => p),
+                ),
+            ),
+        [state.repos],
+    );
+
+    const items = flatten(state.fs, isOpen, repoRoots, worktreeRoots);
 
     return (
         <div className="h-full overflow-auto bg-surface-0">

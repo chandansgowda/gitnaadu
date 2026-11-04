@@ -23,6 +23,7 @@ import {
     remoteLog,
     remoteAheadBehind,
     currentBranch,
+    mainRepoPath,
 } from "../lib/gitEngine";
 
 // Lightweight Input shim — radix Input may not exist; fallback to native input.
@@ -145,7 +146,8 @@ export const RemotePanel = ({ state, setState }) => {
         const branchName = selectedBranch;
         const msgText = commitMessage;
         const fileContent = draft;
-        const cloned = JSON.parse(JSON.stringify(repo));
+        // In a worktree `repo` is a view; the remote lives in the main repo.
+        const cloned = JSON.parse(JSON.stringify(state.repos[mainRepoPath(repo)]));
         const r = remoteCommit(
             cloned,
             branchName,
@@ -175,7 +177,7 @@ export const RemotePanel = ({ state, setState }) => {
         setState(
             (prev) => {
                 const prevRepo = Object.values(prev.repos).find(
-                    (r) => r.path === repo.path,
+                    (r) => r.path === mainRepoPath(repo),
                 );
                 if (!prevRepo) return prev;
                 const cloned = JSON.parse(JSON.stringify(prevRepo));

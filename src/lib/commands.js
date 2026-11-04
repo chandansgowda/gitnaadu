@@ -16,6 +16,7 @@ import {
     copy,
     move,
     dirName,
+    baseName,
 } from "./filesystem";
 import {
     newRepo,
@@ -38,6 +39,15 @@ import {
     gitTag,
     gitStash,
     gitStashPop,
+    gitStashDrop,
+    gitWorktreeList,
+    gitWorktreeAdd,
+    gitWorktreeRemove,
+    gitWorktreePrune,
+    gitWorktreeMove,
+    saveWorktreeView,
+    mainRepoPath,
+    isUnder,
     gitCherryPick,
     gitReflog,
     gitShow,
@@ -192,8 +202,9 @@ const HELP_TEXT = [
     "  Git:    git init, git status, git add, git commit (-a/-m/--amend), git log, git show, git diff (--staged),",
     "          git branch (-d/-D/-m), git checkout, git switch, git tag, git merge (--abort/--continue),",
     "          git rebase, git cherry-pick, git reset, git revert, git restore, git rm, git mv,",
-    "          git stash / pop, git reflog, git push, git pull, git fetch, git clone,",
-    "          git remote, git config, git --version",
+    "          git stash (push/pop/apply/drop/list/clear — pop/apply/drop take stash@{N}),",
+    "          git worktree (add/list/remove/move/prune), git reflog, git push, git pull,",
+    "          git fetch, git clone, git remote, git config, git --version",
     "  Tip:    Press ↑ ↓ for history, Tab for path completion, Ctrl+L to clear.",
 ];
 
@@ -275,10 +286,13 @@ const runSimple = (state, { words, redirect }) => {
 // ---------------------------------------------------------------------------
 // Keep state.repos in step with the filesystem when directories move.
 // ---------------------------------------------------------------------------
-const isUnder = (p, root) => p === root || p.startsWith(root === "/" ? "/" : root + "/");
-
+// Deleting a repo's folder deletes its history too. Deleting a linked
+// worktree's folder only leaves a stale entry behind, like in git, until
+// `git worktree prune` (or `git worktree remove`) cleans it up.
 const dropRepos = (state, path) => {
     for (const k of Object.keys(state.repos)) if (isUnder(k, path)) delete state.repos[k];
+    for (const r of Object.values(state.repos))
+        for (const [p, w] of Object.entries(r.worktrees || {})) if (isUnder(p, path)) w.missing = true;
 };
 
 const relocateRepos = (state, from, to, keepOriginal) => {
@@ -289,9 +303,20 @@ const relocateRepos = (state, from, to, keepOriginal) => {
         const repo = keepOriginal ? JSON.parse(JSON.stringify(r)) : r;
         if (!keepOriginal) delete state.repos[k];
         repo.path = nk;
+        // A copy is a separate repo: the worktrees stay with the original.
+        if (keepOriginal) repo.worktrees = {};
         moved[nk] = repo;
     }
     Object.assign(state.repos, moved);
+    if (keepOriginal) return;
+    // Linked worktrees inside the moved folder move along with it.
+    for (const r of Object.values(state.repos)) {
+        for (const p of Object.keys(r.worktrees || {})) {
+            if (!isUnder(p, from)) continue;
+            r.worktrees[to + p.slice(from.length)] = r.worktrees[p];
+            delete r.worktrees[p];
+        }
+    }
 };
 
 // After a directory was removed, step out to the nearest existing parent.
@@ -338,6 +363,15 @@ export const GIT_DIR_ENTRIES = [
 
 const isRepoRoot = (state, path) => Object.values(state.repos || {}).some((r) => r.path === path);
 
+// In a linked worktree `.git` is a small file pointing back at the main repo.
+const worktreeGitFile = (state, path) => {
+    for (const r of Object.values(state.repos || {})) {
+        const w = get(r.worktrees, path);
+        if (w && !w.missing) return `gitdir: ${r.path === "/" ? "" : r.path}/.git/worktrees/${baseName(path)}`;
+    }
+    return null;
+};
+
 HANDLERS.ls = (state, args) => {
     const { flags, rest } = splitFlags(args);
     const target = rest[0] ? normalizePath(state.cwd, expandTilde(rest[0])) : state.cwd;
@@ -345,12 +379,16 @@ HANDLERS.ls = (state, args) => {
     let node = getNode(state.fs, target);
     if (!node && target.endsWith("/.git") && isRepoRoot(state, dirName(target)))
         node = { type: "dir", children: {}, virtualGit: true };
+    if (!node && target.endsWith("/.git") && worktreeGitFile(state, dirName(target)))
+        node = { type: "file", name: ".git" };
     if (!node) return { state, output: [err(`ls: cannot access '${rest[0]}': No such file or directory`)] };
     if (node.type === "file") return { state, output: [out(node.name)] };
     let items = node.virtualGit ? GIT_DIR_ENTRIES : listDir(node);
     if (showAll) {
         if (!node.virtualGit && isRepoRoot(state, target) && !has(node.children, ".git"))
             items = [{ name: ".git", type: "dir" }, ...items];
+        else if (worktreeGitFile(state, target) && !has(node.children, ".git"))
+            items = [{ name: ".git", type: "file" }, ...items];
         if (flags.has("-a") || flags.has("--all"))
             items = [{ name: ".", type: "dir" }, { name: "..", type: "dir" }, ...items];
     } else {
@@ -376,6 +414,8 @@ HANDLERS.cd = (state, args) => {
     const node = getNode(state.fs, next);
     if (!node && next.endsWith("/.git") && isRepoRoot(state, dirName(next)))
         return { state, output: [err("cd: .git is managed by GitNaadu behind the scenes — peek inside with `ls .git`")] };
+    if (!node && next.endsWith("/.git") && worktreeGitFile(state, dirName(next)))
+        return { state, output: [err(`cd: not a directory: ${target}`), muted("hint: in a worktree .git is a file — try `cat .git`")] };
     if (!node) return { state, output: [err(`cd: no such file or directory: ${target}`)] };
     if (node.type !== "dir") return { state, output: [err(`cd: not a directory: ${target}`)] };
     return { state: { ...state, cwd: next }, output: [] };
@@ -453,7 +493,10 @@ HANDLERS.mv = (state, args) => {
 const fileLines = (content) => (content ? content.replace(/\n$/, "").split("\n") : []);
 
 const readFile = (state, cmd, t) => {
-    const node = getNode(state.fs, normalizePath(state.cwd, expandTilde(t)));
+    const p = normalizePath(state.cwd, expandTilde(t));
+    const node = getNode(state.fs, p);
+    const gitFile = !node && p.endsWith("/.git") ? worktreeGitFile(state, dirName(p)) : null;
+    if (gitFile) return { lines: [gitFile] };
     if (!node) return { error: `${cmd}: ${t}: No such file or directory` };
     if (node.type !== "file") return { error: `${cmd}: ${t}: Is a directory` };
     return { lines: fileLines(node.content) };
@@ -526,10 +569,14 @@ const NOT_A_REPO = "fatal: not a git repository (or any of the parent directorie
 // saved repo in place is safe.
 const requireRepo = (state) => ensureRepoShape(findRepo(state.repos, state.cwd));
 
+// In a linked worktree `repo` is a view (see findRepo), so its changes are
+// saved back into the main repo afterwards.
 const withRepo = (fn) => (state, args) => {
     const repo = requireRepo(state);
     if (!repo) return { state, output: [err(NOT_A_REPO)] };
-    return fn(state, repo, args);
+    const result = fn(state, repo, args);
+    saveWorktreeView(state.repos, repo);
+    return result;
 };
 
 // Path argument (relative to cwd) → path relative to the repo root.
@@ -599,6 +646,12 @@ GIT_HANDLERS.init = (state, args) => {
     if (!node && !ensureDir(state.fs, dir)) return { state, output: [err(`fatal: cannot mkdir ${rest[0]}`)] };
     const gitDir = (dir === "/" ? "" : dir) + "/.git/";
     if (has(state.repos, dir)) return { state, output: [muted(`Reinitialized existing Git repository in ${gitDir}`)] };
+    const wt = findRepo(state.repos, dir);
+    if (wt?.worktreeOf && wt.path === dir)
+        return {
+            state,
+            output: [muted(`Reinitialized existing Git repository in ${wt.worktreeOf === "/" ? "" : wt.worktreeOf}/.git/worktrees/${baseName(dir)}/`)],
+        };
     state.repos[dir] = newRepo(dir);
     return {
         state,
@@ -786,7 +839,15 @@ GIT_HANDLERS.branch = withRepo((state, repo, args) => {
             };
         const lines = [];
         if (repo.HEAD.type === "detached") lines.push(ok(`* (${shortRef(repo)})`));
-        r.list.forEach((b) => lines.push(b.active ? ok(`* ${b.name}`) : out(`  ${b.name}`)));
+        r.list.forEach((b) =>
+            lines.push(
+                b.active
+                    ? ok(`* ${b.name}`)
+                    : b.worktree
+                      ? muted(`+ ${b.name}  (checked out in worktree ${b.worktree})`)
+                      : out(`  ${b.name}`),
+            ),
+        );
         return { state, output: lines };
     }
     const r = gitBranch(repo, rest[0], { start: rest[1] });
@@ -809,7 +870,7 @@ const checkoutImpl = (state, repo, args, asSwitch) => {
             !has(repo.branches, target) &&
             !resolveRev(repo, target) &&
             getNode(state.fs, normalizePath(state.cwd, expandTilde(target)));
-        if (flags.has("--") || looksLikePath) return GIT_HANDLERS.restore(state, rest);
+        if (flags.has("--") || looksLikePath) return restoreImpl(state, repo, rest);
     }
     const blocked = blockedByMerge(state, repo, asSwitch ? "switch" : "checkout");
     if (blocked) return blocked;
@@ -897,7 +958,7 @@ GIT_HANDLERS.reset = withRepo((state, repo, args) => {
         return has(repo.staged, rp) || has(repo.tracked, rp) || !!getNode(state.fs, normalizePath(state.cwd, expandTilde(x)));
     };
     const paths = flags.has("--") ? rest.slice(rest[0] === "HEAD" ? 1 : 0) : rest[0] === "HEAD" ? rest.slice(1) : rest.filter(isPath);
-    if (mode === "--mixed" && paths.length) return GIT_HANDLERS.restore(state, ["--staged", ...paths]);
+    if (mode === "--mixed" && paths.length) return restoreImpl(state, repo, ["--staged", ...paths]);
     const target = rest[0] || "HEAD";
     const r = gitReset(state.fs, repo, target, mode);
     if (r.error) return { state, output: errLines(r.error) };
@@ -1061,16 +1122,30 @@ GIT_HANDLERS.stash = withRepo((state, repo, args) => {
             highlight: { kind: "git-stash", id: r.id },
         };
     }
-    if (sub === "pop") {
-        const blocked = blockedByMerge(state, repo, "stash pop");
+    if (sub === "pop" || sub === "apply") {
+        const blocked = blockedByMerge(state, repo, `stash ${sub}`);
         if (blocked) return blocked;
-        const r = gitStashPop(state.fs, repo);
+        const { rest } = splitFlags(args.slice(1)); // --index is accepted and ignored
+        if (rest.length > 1) return { state, output: [err(`error: too many arguments — usage: git stash ${sub} [stash@{N}]`)] };
+        const r = gitStashPop(state.fs, repo, rest[0], { keep: sub === "apply" });
         if (r.error) return { state, output: errLines(r.error) };
         return {
             state,
-            output: [ok(`Applied stash ${r.id}`)],
-            highlight: { kind: "git-stash-pop", id: r.id },
+            output: [
+                ok(`Applied ${r.id}`),
+                r.kept
+                    ? muted(`${r.id} is still in the stash list (\`git stash drop ${r.id}\` removes it)`)
+                    : muted(`Dropped ${r.id}`),
+            ],
+            highlight: { kind: r.kept ? "git-stash-apply" : "git-stash-pop", id: r.id },
         };
+    }
+    if (sub === "drop") {
+        const { rest } = splitFlags(args.slice(1));
+        if (rest.length > 1) return { state, output: [err("error: too many arguments — usage: git stash drop [stash@{N}]")] };
+        const r = gitStashDrop(repo, rest[0]);
+        if (r.error) return { state, output: errLines(r.error) };
+        return { state, output: [ok(`Dropped ${r.id}`)], highlight: { kind: "git-stash-drop", id: r.id } };
     }
     if (sub === "list") {
         if (repo.stashes.length === 0) return { state, output: [muted("(no stash)")] };
@@ -1083,7 +1158,122 @@ GIT_HANDLERS.stash = withRepo((state, repo, args) => {
         repo.stashes = [];
         return { state, output: [ok("Cleared stash entries.")] };
     }
-    return { state, output: [err(`error: unknown subcommand: '${sub}' (try push, pop, list or clear)`)] };
+    return { state, output: [err(`error: unknown subcommand: '${sub}' (try push, pop, apply, drop, list or clear)`)] };
+});
+
+const WORKTREE_USAGE = [
+    muted("usage: git worktree add [-b <new-branch>] [--detach] <path> [<branch-or-commit>]"),
+    muted("   or: git worktree list"),
+    muted("   or: git worktree remove [--force] <worktree>"),
+    muted("   or: git worktree move <worktree> <new-path>"),
+    muted("   or: git worktree prune"),
+];
+
+// A worktree argument: its path, or (like git) just its folder name when that's unique.
+const worktreeArg = (state, repo, arg) => {
+    const p = normalizePath(state.cwd, expandTilde(arg));
+    const main = get(state.repos, mainRepoPath(repo));
+    const paths = Object.keys(main?.worktrees || {});
+    if (paths.includes(p) || arg.includes("/")) return p;
+    const named = paths.filter((w) => baseName(w) === arg);
+    return named.length === 1 ? named[0] : p;
+};
+
+GIT_HANDLERS.worktree = withRepo((state, repo, args) => {
+    const [sub, ...more] = args;
+    if (!sub) return { state, output: [err("error: need a subcommand"), ...WORKTREE_USAGE] };
+
+    if (sub === "list") {
+        const list = gitWorktreeList(state.repos, repo);
+        const width = Math.max(...list.map((w) => w.path.length));
+        return {
+            state,
+            output: list.map((w) => {
+                const text =
+                    `${w.path.padEnd(width)}  ${(w.hash || "0000000").slice(0, 7)} ` +
+                    (w.branch ? `[${w.branch}]` : "(detached HEAD)") +
+                    (w.prunable ? " prunable" : "");
+                return w.path === repo.path ? ok(text) : w.prunable ? del(text) : out(text);
+            }),
+            highlight: { kind: "git-worktree-list", count: list.length },
+        };
+    }
+
+    if (sub === "add") {
+        const opts = {};
+        const pos = [];
+        for (let i = 0; i < more.length; i++) {
+            const a = more[i];
+            if (a === "-b" || a === "-B") {
+                if (more[i + 1] === undefined) return { state, output: [err(`error: switch '${a[1]}' requires a value`)] };
+                opts.newBranch = more[++i];
+                opts.resetBranch = a === "-B";
+            } else if (a === "--detach" || a === "-d") opts.detach = true;
+            else if (a.startsWith("-") && a !== "-") return { state, output: [err(`error: unknown option '${a}'`), ...WORKTREE_USAGE] };
+            else pos.push(a);
+        }
+        if (!pos[0] || pos.length > 2) return { state, output: WORKTREE_USAGE.slice(0, 1), failed: true };
+        if (opts.newBranch && opts.detach)
+            return { state, output: [err("fatal: options '-b', '-B', and '--detach' cannot be used together")] };
+        const r = gitWorktreeAdd(state.fs, state.repos, repo, normalizePath(state.cwd, expandTilde(pos[0])), {
+            ...opts,
+            commitish: pos[1],
+            label: pos[0],
+        });
+        if (r.error) return { state, output: errLines(r.error) };
+        const how = r.created
+            ? `new branch '${r.created}'`
+            : r.branch
+              ? `checking out '${r.branch}'`
+              : `detached HEAD ${r.hash}`;
+        return {
+            state,
+            output: [
+                muted(`Preparing worktree (${how})`),
+                ok(`HEAD is now at ${r.hash} ${r.message}`),
+                muted(`hint: \`cd ${pos[0]}\` to work there — it shares this repo's commits and branches.`),
+            ],
+            highlight: { kind: "git-worktree-add", path: r.path, branch: r.branch, created: r.created },
+        };
+    }
+
+    if (sub === "remove") {
+        const { flags, rest } = splitFlags(more);
+        if (rest.length !== 1) return { state, output: WORKTREE_USAGE.slice(2, 3), failed: true };
+        const target = worktreeArg(state, repo, rest[0]);
+        const force = flags.has("-f") || flags.has("--force");
+        const r = gitWorktreeRemove(state.fs, state.repos, repo, target, { force, label: rest[0] });
+        if (r.error) return { state, output: errLines(r.error) };
+        const lines = [ok(`Removed worktree ${r.path}`)];
+        if (r.branch) lines.push(muted(`Branch '${r.branch}' is kept — delete it with \`git branch -d ${r.branch}\` if you're done with it.`));
+        if (fixCwd(state)) lines.push(muted(`(you were inside it — now in ${state.cwd})`));
+        return { state, output: lines, highlight: { kind: "git-worktree-remove", path: r.path, branch: r.branch } };
+    }
+
+    if (sub === "prune") {
+        const r = gitWorktreePrune(state.repos, repo);
+        if (!r.pruned.length) return { state, output: [muted("Nothing to prune — every worktree folder still exists.")] };
+        return {
+            state,
+            output: r.pruned.map((p) => out(`Removing worktrees/${baseName(p)}: gitdir file points to non-existent location`)),
+            highlight: { kind: "git-worktree-prune", count: r.pruned.length },
+        };
+    }
+
+    if (sub === "move") {
+        const { rest } = splitFlags(more);
+        if (rest.length !== 2) return { state, output: WORKTREE_USAGE.slice(3, 4), failed: true };
+        const src = worktreeArg(state, repo, rest[0]);
+        const dst = normalizePath(state.cwd, expandTilde(rest[1]));
+        const r = gitWorktreeMove(state.fs, state.repos, repo, src, dst, { label: rest[0] });
+        if (r.error) return { state, output: errLines(r.error) };
+        if (isUnder(state.cwd, r.from)) state.cwd = r.to + state.cwd.slice(r.from.length);
+        return { state, output: [ok(`Moved worktree ${r.from} -> ${r.to}`)], highlight: { kind: "git-worktree-move", path: r.to } };
+    }
+
+    if (["lock", "unlock", "repair"].includes(sub))
+        return { state, output: [err(`git worktree ${sub} isn't simulated in GitNaadu`), ...WORKTREE_USAGE] };
+    return { state, output: [err(`error: unknown subcommand: '${sub}'`), ...WORKTREE_USAGE] };
 });
 
 GIT_HANDLERS.reflog = withRepo((state, repo) => {
@@ -1146,7 +1336,8 @@ GIT_HANDLERS.diff = withRepo((state, repo, args) => {
     return { state, output: renderPatch(pairs), highlight: { kind: "git-diff", count: pairs.length } };
 });
 
-GIT_HANDLERS.restore = withRepo((state, repo, args) => {
+// Also used by `git checkout -- <file>` and `git reset <file>` on the same repo object.
+function restoreImpl(state, repo, args) {
     const { flags, rest } = splitFlags(args);
     if (!rest[0]) return { state, output: [err("usage: git restore [--staged] <path>")] };
     const staged = flags.has("--staged") || flags.has("-S");
@@ -1161,7 +1352,8 @@ GIT_HANDLERS.restore = withRepo((state, repo, args) => {
             ? muted(staged ? "Nothing to unstage" : "Nothing to restore: no changes in those files")
             : ok(staged ? `Unstaged ${count} change(s)` : `Restored ${count} file(s)`);
     return { state, output: [line], highlight: { kind: "git-restore", path: rest[0] } };
-});
+}
+GIT_HANDLERS.restore = withRepo(restoreImpl);
 
 GIT_HANDLERS.rm = withRepo((state, repo, args) => {
     const { flags, rest } = splitFlags(args);

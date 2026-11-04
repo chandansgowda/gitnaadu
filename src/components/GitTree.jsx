@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { GitBranch, GitCommit, Tag } from "lucide-react";
+import { GitBranch, GitCommit, Tag, FolderGit2 } from "lucide-react";
 import { findRepo } from "../lib/gitEngine";
 import { buildGraph } from "../lib/graphLayout";
 
@@ -275,13 +275,16 @@ export const GitTree = ({ state, onSelectCommit }) => {
                                     {branchTags.map((bt) => (
                                         <span
                                             key={bt.name}
-                                            className="px-1.5 py-0.5 text-[10px] uppercase font-bold tracking-wider rounded-sm border"
+                                            className="px-1.5 py-0.5 text-[10px] uppercase font-bold tracking-wider rounded-sm border flex items-center gap-1"
                                             style={{
                                                 color: bt.color,
                                                 borderColor: bt.color + "88",
                                                 background: bt.color + "15",
                                             }}
+                                            title={bt.worktree ? `${bt.name} is checked out in worktree ${bt.worktree}` : undefined}
+                                            data-testid={bt.worktree ? "worktree-branch-" + bt.name : undefined}
                                         >
+                                            {bt.worktree && <FolderGit2 className="w-3 h-3" />}
                                             {bt.name}
                                         </span>
                                     ))}

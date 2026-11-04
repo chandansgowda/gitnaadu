@@ -1,4 +1,4 @@
-import { Activity, GitCommit, GitBranch, Hash } from "lucide-react";
+import { Activity, GitCommit, GitBranch, Hash, FolderGit2 } from "lucide-react";
 import { Credits } from "./Credits";
 
 export const StatusBar = ({ state, repo, branch }) => {
@@ -44,6 +44,16 @@ export const StatusBar = ({ state, repo, branch }) => {
                     <span className="hidden xl:flex items-center gap-1">
                         <Hash className="w-3 h-3 text-zinc-500" />
                         <span className="text-yellow">{head}</span>
+                    </span>
+                )}
+                {repo?.worktreeOf && (
+                    <span
+                        className="flex items-center gap-1 text-sky-400"
+                        title={`Linked worktree of ${repo.worktreeOf}`}
+                        data-testid="status-worktree"
+                    >
+                        <FolderGit2 className="w-3 h-3" />
+                        worktree
                     </span>
                 )}
                 {branch && <span className="text-yellow truncate max-w-[10rem]">{branch}</span>}

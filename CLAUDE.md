@@ -65,8 +65,11 @@ A repo in `state.repos` (see `newRepo` in `gitEngine.js`) looks like:
 { path, commits: {[hash]: Commit}, branches: {[name]: hash},
   HEAD: { type: 'branch'|'detached', ref }, tags, staged, tracked,
   remote: { branches, commits, url }, remoteRefs, remotes: { origin },
-  merging: null | { head, label, message, conflicts: [path], kinds } }
+  merging: null | { head, label, message, conflicts: [path], kinds },
+  worktrees: { [absPath]: { HEAD, staged, tracked, merging, reflog, missing? } } }
 ```
+
+- **Worktrees:** a linked worktree (`git worktree add`) is *not* a separate entry in `state.repos`; its per-folder state (HEAD, index, merge, reflog) lives in the main repo's `worktrees` map and everything else is shared. Inside a worktree folder `findRepo` returns a *view* (`{ ...main, ...worktree state, path, worktreeOf, mainHEAD }`), so engine code and panels need no special casing. `withRepo` calls `saveWorktreeView` afterwards to write the view's changes back, so git handlers must go through `withRepo` (call an `*Impl` function, not another `GIT_HANDLERS` entry, to reuse a handler). Code that writes a repo into `state.repos` must use `mainRepoPath(repo)`, not `repo.path`. A branch may be checked out in only one working tree (`checkedOutElsewhere`). `rm -rf` of a worktree folder marks it `missing` until `git worktree prune`.
 
 - **Merge conflicts:** `git merge` / `git pull` can stop half-way. `repo.merging` is then set, the working tree holds conflict markers, and HEAD doesn't move. `git add` marks files resolved, `git commit` (or `merge --continue`) creates the two-parent commit, and `merge --abort` / any `reset` cancels. Most history-changing commands refuse to run mid-merge (`blockedByMerge` in `commands.js`). Rebase, cherry-pick and revert do three-way applies too, but on a conflict they refuse and change nothing.
 - **One remote:** only `origin` exists. `git remote remove origin` disconnects push/fetch/pull until `git remote add origin <url>`.

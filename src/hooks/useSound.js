@@ -108,6 +108,8 @@ export const soundForHighlight = (highlight) => {
         return "branch";
     if (k === "git-merge-abort") return "pop";
     if (k === "git-init" || k === "git-clone" || k === "git-push" || k === "git-tag") return "success";
-    if (k === "git-add" || k === "git-restore" || k === "git-stash" || k === "git-stash-pop") return "pop";
+    if (k === "git-worktree-add" || k === "git-worktree-move") return "branch";
+    if (k === "git-worktree-remove" || k === "git-worktree-prune") return "pop";
+    if (k === "git-add" || k === "git-restore" || k.startsWith("git-stash")) return "pop";
     return null;
 };
