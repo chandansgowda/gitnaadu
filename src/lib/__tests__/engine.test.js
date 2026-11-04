@@ -557,6 +557,39 @@ describe("worktrees", () => {
         expect(text).toBe(`gitdir: ${P}/.git/worktrees/wt`);
     });
 
+    test("a recreated folder at a pruned-away nested worktree path belongs to the main repo again", () => {
+        const { text } = run(withRepo(), "git worktree add inner", "rm -rf inner", "mkdir inner", "echo hi > inner/x.txt", "git status");
+        expect(text).toContain("inner/x.txt");
+    });
+
+    test("add refuses a folder that is already another repo", () => {
+        const { state, last } = run(withRepo(), "git init ../empty", "git worktree add ../empty");
+        expect(last.failed).toBe(true);
+        expect(main(state).worktrees).toEqual({});
+    });
+
+    test("remove and move take repos and worktrees nested in the folder along", () => {
+        let { state } = run(withRepo(), "git worktree add ../wt", "cd ../wt", "git init sub", "cd ../proj", "git worktree remove --force ../wt");
+        expect(Object.keys(state.repos)).toEqual([P]);
+        ({ state } = run(withRepo(), "git worktree add ../wt", "cd ../wt", "git worktree add inner", "cd ../proj", "git worktree move ../wt ../wt2"));
+        expect(Object.keys(main(state).worktrees).sort()).toEqual([`${HOME}/wt2`, `${HOME}/wt2/inner`]);
+    });
+
+    test("a branch held by a deleted worktree folder hints at prune", () => {
+        const { text } = run(withRepo(), "git worktree add ../wt", "rm -rf ../wt", "git switch wt");
+        expect(text).toContain("git worktree prune");
+    });
+
+    test("commands in a worktree never modify the state they were given (undo)", () => {
+        let state = run(withRepo(), "git worktree add ../wt", "cd ../wt").state;
+        for (const line of ["echo z > z.txt", "git add .", "git commit -m z", "git branch -m wt w2", "git checkout -b n", "git reset --hard HEAD~1", "git worktree remove ."]) {
+            const before = JSON.stringify(state);
+            const r = executeCommand(state, line);
+            expect(JSON.stringify(state)).toBe(before);
+            state = r.state;
+        }
+    });
+
     test("worktree state survives a JSON round trip (persistence)", () => {
         let { state } = run(withRepo(), "git worktree add ../wt", "cd ../wt", "echo z > z.txt", "git add z.txt");
         state = JSON.parse(JSON.stringify(state));

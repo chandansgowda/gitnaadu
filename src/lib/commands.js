@@ -1244,6 +1244,7 @@ GIT_HANDLERS.worktree = withRepo((state, repo, args) => {
         const force = flags.has("-f") || flags.has("--force");
         const r = gitWorktreeRemove(state.fs, state.repos, repo, target, { force, label: rest[0] });
         if (r.error) return { state, output: errLines(r.error) };
+        dropRepos(state, r.path); // repos and worktrees nested in the deleted folder go too
         const lines = [ok(`Removed worktree ${r.path}`)];
         if (r.branch) lines.push(muted(`Branch '${r.branch}' is kept — delete it with \`git branch -d ${r.branch}\` if you're done with it.`));
         if (fixCwd(state)) lines.push(muted(`(you were inside it — now in ${state.cwd})`));
@@ -1267,6 +1268,7 @@ GIT_HANDLERS.worktree = withRepo((state, repo, args) => {
         const dst = normalizePath(state.cwd, expandTilde(rest[1]));
         const r = gitWorktreeMove(state.fs, state.repos, repo, src, dst, { label: rest[0] });
         if (r.error) return { state, output: errLines(r.error) };
+        relocateRepos(state, r.from, r.to, false); // repos and worktrees nested in it move along
         if (isUnder(state.cwd, r.from)) state.cwd = r.to + state.cwd.slice(r.from.length);
         return { state, output: [ok(`Moved worktree ${r.from} -> ${r.to}`)], highlight: { kind: "git-worktree-move", path: r.to } };
     }

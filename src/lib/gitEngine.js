@@ -183,7 +183,14 @@ export const checkedOutElsewhere = (repo, name) => {
     return null;
 };
 
-const usedByWorktreeError = (name, path) => `fatal: '${name}' is already used by worktree at '${path}'`;
+// A worktree whose folder was deleted by hand still holds its branch.
+const pruneHint = (repo, path) =>
+    get(repo.worktrees, path)?.missing
+        ? `\nhint: that folder no longer exists — run 'git worktree prune' to release the branch`
+        : "";
+
+const usedByWorktreeError = (repo, name, path) =>
+    `fatal: '${name}' is already used by worktree at '${path}'` + pruneHint(repo, path);
 
 export const relPath = (repo, absPath) => {
     if (absPath === repo.path) return ".";
@@ -257,9 +264,8 @@ const recordCommit = (repo, { files, parents, message, author, op, oldHash, logM
 // they hold their own checkout, not files of this one.
 export const workingSnapshot = (fsRoot, repo) => {
     const files = walkFiles(fsRoot, repo.path);
-    const nested = [mainRepoPath(repo), ...Object.keys(repo.worktrees || {})].filter(
-        (p) => p !== repo.path && isUnder(p, repo.path),
-    );
+    const live = Object.keys(repo.worktrees || {}).filter((p) => !repo.worktrees[p].missing);
+    const nested = [mainRepoPath(repo), ...live].filter((p) => p !== repo.path && isUnder(p, repo.path));
     const snap = {};
     for (const f of files) {
         if (nested.some((p) => isUnder(f.path, p))) continue;
@@ -529,7 +535,10 @@ export const gitBranch = (repo, name, opts = {}) => {
         if (currentBranch(repo) === name)
             return { error: `error: cannot delete branch '${name}' checked out` };
         const elsewhere = checkedOutElsewhere(repo, name);
-        if (elsewhere) return { error: `error: cannot delete branch '${name}' used by worktree at '${elsewhere}'` };
+        if (elsewhere)
+            return {
+                error: `error: cannot delete branch '${name}' used by worktree at '${elsewhere}'` + pruneHint(repo, elsewhere),
+            };
         const tip = repo.branches[name];
         const merged =
             isAncestor(repo, tip, headCommit(repo)) ||
@@ -591,7 +600,7 @@ export const gitCheckout = (fsRoot, repo, target, opts = {}) => {
         return { error: `fatal: a branch named '${target}' already exists` };
     const isBranch = opts.newBranch || has(repo.branches, target);
     const elsewhere = isBranch && !opts.newBranch && checkedOutElsewhere(repo, target);
-    if (elsewhere) return { error: usedByWorktreeError(target, elsewhere) };
+    if (elsewhere) return { error: usedByWorktreeError(repo, target, elsewhere) };
     const hash = opts.newBranch
         ? (opts.start ? resolveRev(repo, opts.start) : headCommit(repo))
         : isBranch
@@ -1293,7 +1302,11 @@ export const gitWorktreeAdd = (fsRoot, repos, repo, path, opts = {}) => {
                 `hint: clean it up with 'git worktree prune' (or 'git worktree remove ${label}') first`,
         };
     const node = getNode(fsRoot, path);
-    if (path === main.path || registered || (node && (node.type !== "dir" || Object.keys(node.children || {}).length)))
+    // Another repo, or a live worktree of one, may sit in an empty folder.
+    const taken = Object.values(repos).some(
+        (r) => r.path === path || (get(r.worktrees, path) && !r.worktrees[path].missing),
+    );
+    if (taken || registered || (node && (node.type !== "dir" || Object.keys(node.children || {}).length)))
         return { error: `fatal: '${label}' already exists` };
     // A branch can be checked out in only one working tree at a time.
     const usedAt = (name) => (currentBranch(repo) === name ? repo.path : checkedOutElsewhere(repo, name));
@@ -1302,7 +1315,7 @@ export const gitWorktreeAdd = (fsRoot, repos, repo, path, opts = {}) => {
         return at
             ? {
                   error:
-                      usedByWorktreeError(name, at) +
+                      usedByWorktreeError(repo, name, at) +
                       `\nhint: give the new worktree its own branch with -b <new-branch>, or use --detach`,
               }
             : null;
