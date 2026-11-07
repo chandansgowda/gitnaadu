@@ -373,6 +373,69 @@ describe("restore", () => {
     });
 });
 
+describe("revert / cherry-pick with ranges", () => {
+    // base, then one commit per file: one.txt, two.txt, three.txt
+    const three = () =>
+        run(
+            withRepo(),
+            "echo 1 > one.txt", "git add .", 'git commit -m "one"',
+            "echo 2 > two.txt", "git add .", 'git commit -m "two"',
+            "echo 3 > three.txt", "git add .", 'git commit -m "three"',
+        ).state;
+    const has = (s, f) => getNode(s.fs, `${s.cwd}/${f}`) !== null;
+    const msgs = (s) => run(s, "git log --oneline").last.output.map((l) => l.text.replace(/^\S+ (\(.*?\) )?/, ""));
+
+    test("git revert HEAD~2..HEAD reverts the last two commits, newest first", () => {
+        const r = run(three(), "git revert HEAD~2..HEAD");
+        expect(r.last.output.filter((l) => l.kind === "success")).toHaveLength(2);
+        expect(msgs(r.state).slice(0, 2)).toEqual(['Revert "two"', 'Revert "three"']);
+        expect(has(r.state, "three.txt")).toBe(false);
+        expect(has(r.state, "two.txt")).toBe(false);
+        expect(has(r.state, "one.txt")).toBe(true);
+        expect(r.last.highlight).toMatchObject({ kind: "git-revert", count: 2 });
+    });
+
+    test("several commits in one command, in the order given", () => {
+        const s = three();
+        const r = run(s, "git revert HEAD HEAD~2");
+        expect(msgs(r.state).slice(0, 2)).toEqual(['Revert "one"', 'Revert "three"']);
+        expect(has(r.state, "two.txt")).toBe(true);
+    });
+
+    test("single commit works as before", () => {
+        const r = run(three(), "git revert HEAD");
+        expect(r.last.output).toHaveLength(1);
+        expect(r.text).toMatch(/^Reverted \w+ as \w+$/);
+        expect(r.last.highlight).toMatchObject({ kind: "git-revert", target: "HEAD", count: 1 });
+    });
+
+    test("cherry-pick A..B applies oldest first", () => {
+        let s = run(three(), "git checkout -b other HEAD~3").state;
+        const r = run(s, "git cherry-pick main~2..main");
+        expect(msgs(r.state).slice(0, 2)).toEqual(["three", "two"]);
+        expect(has(r.state, "two.txt") && has(r.state, "three.txt")).toBe(true);
+        expect(has(r.state, "one.txt")).toBe(false);
+    });
+
+    test("all or nothing: a failing commit leaves history and files untouched", () => {
+        const s = three();
+        const head = headCommit(repoOf(s));
+        // the second revert (of HEAD again) has nothing left to undo
+        const r = run(s, "git revert HEAD HEAD");
+        expect(r.last.failed).toBe(true);
+        expect(headCommit(repoOf(r.state))).toBe(head);
+        expect(has(r.state, "three.txt")).toBe(true);
+        expect(r.text).toMatch(/no commits were reverted/);
+    });
+
+    test("bad and empty ranges are errors", () => {
+        const s = three();
+        expect(run(s, "git revert HEAD..nope").last.output[0].kind).toBe("err");
+        expect(run(s, "git revert HEAD..HEAD").text).toMatch(/empty commit set/);
+        expect(run(s, "git revert").text).toMatch(/usage/);
+    });
+});
+
 describe("merge3", () => {
     test("identical changes on both sides are not a conflict", () => {
         expect(merge3("a\nb", "a\nX", "a\nX")).toEqual({ text: "a\nX", conflict: false });
