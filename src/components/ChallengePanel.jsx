@@ -183,7 +183,8 @@ const ChallengeList = ({ challenges, progress, completed, activeId, onStart, onR
         <div className="flex-1 overflow-auto" data-testid="challenge-list">
             <div className="px-5 py-3 text-[11px] text-zinc-400 leading-relaxed">
                 Pick a quest. Run the suggested commands in the terminal — each
-                step auto-completes when its goal is reached.
+                step auto-completes when its goal is reached. Finish them all
+                to earn your certificate.
             </div>
             <div className="px-3 pb-2">
                 <CertificateCard done={doneCount} total={challenges.length} onOpen={onOpenCertificate} />

@@ -97,6 +97,30 @@ export const decodeCertificate = (code) => {
 export const verifyUrl = (name, dateKey, base = SITE_URL) =>
     `${base.replace(/\/+$/, "")}/?${CERT_PARAM}=${encodeCertificate(name, dateKey)}`;
 
+// ---- sharing ----
+const enc = encodeURIComponent;
+
+// Share-intent links for the verification URL. `text` goes with the link
+// where the network accepts one (LinkedIn and Facebook only take the URL).
+export const shareLinks = (url, text) => ({
+    linkedin: `https://www.linkedin.com/sharing/share-offsite/?url=${enc(url)}`,
+    x: `https://twitter.com/intent/tweet?text=${enc(text)}&url=${enc(url)}`,
+    whatsapp: `https://wa.me/?text=${enc(`${text} ${url}`)}`,
+    facebook: `https://www.facebook.com/sharer/sharer.php?u=${enc(url)}`,
+});
+
+// LinkedIn's "add to profile" form, pre-filled under Licenses & certifications.
+export const linkedInAddUrl = ({ url, dateKey, course, organization }) => {
+    const date = parseDateKey(dateKey);
+    const params = new URLSearchParams({ startTask: "CERTIFICATION_NAME", name: course, organizationName: organization });
+    if (date) {
+        params.set("issueYear", String(date.getFullYear()));
+        params.set("issueMonth", String(date.getMonth() + 1));
+    }
+    params.set("certUrl", url);
+    return `https://www.linkedin.com/profile/add?${params}`;
+};
+
 // Everything the certificate drawing needs for one learner.
 export const certificateData = (name, dateKey) => ({
     name,

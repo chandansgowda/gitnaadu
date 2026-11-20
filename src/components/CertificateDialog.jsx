@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Award, Check, Download, Link2, Loader2, Pencil, Share2 } from "lucide-react";
+import { Award, BadgePlus, Check, Download, Link2, Loader2, Pencil, Share2 } from "lucide-react";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "./ui/dialog";
 import {
     CERT,
@@ -12,7 +12,8 @@ import {
     makeCertPng,
 } from "../lib/certificate";
 import { cleanDetails, submitDetails, validateDetails } from "../lib/certificateForm";
-import { certificateData, toDateKey } from "../lib/certificateLink";
+import { certificateData, linkedInAddUrl, toDateKey } from "../lib/certificateLink";
+import { CertificateShare } from "./CertificateShare";
 
 // Only the name and date of issue are remembered (to redraw the certificate
 // next time); contact details are sent once and not kept in the browser.
@@ -370,6 +371,28 @@ const CertificateView = ({ name, dateKey, onEdit }) => {
                         Share
                     </button>
                 )}
+            </div>
+            <div className="mt-5">
+                <CertificateShare
+                    url={data.verifyUrl}
+                    text={`I completed all the hands-on ${CERT.course} challenges on GitNaadu by ${CERT.brand.name}! Here is my certificate:`}
+                >
+                    <a
+                        href={linkedInAddUrl({
+                            url: data.verifyUrl,
+                            dateKey,
+                            course: `${CERT.course} (GitNaadu)`,
+                            organization: CERT.brand.name,
+                        })}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="col-span-2 h-11 sm:h-9 px-3.5 rounded-lg border border-yellow/50 text-sm sm:text-xs font-semibold text-yellow flex items-center justify-center gap-2 hover:bg-yellow/10 transition-colors"
+                        data-testid="share-linkedin-add"
+                    >
+                        <BadgePlus className="w-4 h-4 sm:w-3.5 sm:h-3.5" />
+                        Add to LinkedIn profile
+                    </a>
+                </CertificateShare>
             </div>
             <div className="mt-3 flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
                 <button

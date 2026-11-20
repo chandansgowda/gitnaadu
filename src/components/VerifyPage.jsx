@@ -1,7 +1,10 @@
 import { useEffect, useMemo, useRef } from "react";
-import { ArrowRight, BadgeCheck, GitBranch, ShieldAlert } from "lucide-react";
+import { ArrowRight, BadgeCheck, GitBranch, ShieldAlert, Youtube } from "lucide-react";
 import { CERT, CERT_W, drawCertificate, loadCertFonts } from "../lib/certificate";
 import { certificateData, decodeCertificate } from "../lib/certificateLink";
+import { CertificateShare } from "./CertificateShare";
+
+const COURSE_URL = "https://www.youtube.com/@EngineeringinKannada";
 
 // Public page behind the QR code on a certificate: `/?cert=<code>`. It reads
 // everything from the link, so it never touches the visitor's saved playground.
@@ -18,17 +21,31 @@ const Shell = ({ children }) => (
             </a>
             {children}
             <div className="mt-8 rounded-xl border border-surface-3 bg-surface-1 p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-5">
-                <p className="flex-1 text-sm text-zinc-400 leading-relaxed">
-                    GitNaadu is a free playground by {CERT.brand.name} for learning Git by doing, right in
-                    the browser.
-                </p>
-                <a
-                    href="/"
-                    className="h-11 px-5 rounded-lg bg-yellow text-black text-sm font-bold flex items-center justify-center gap-2 hover:bg-yellow/90 transition-colors flex-shrink-0"
-                >
-                    Try GitNaadu
-                    <ArrowRight className="w-4 h-4" />
-                </a>
+                <div className="flex-1">
+                    <p className="text-sm font-bold text-white">Want one with your name on it?</p>
+                    <p className="mt-1 text-sm text-zinc-400 leading-relaxed">
+                        GitNaadu is a free playground by {CERT.brand.name} for learning Git by doing, right in
+                        the browser. Finish every challenge and you get this certificate too.
+                    </p>
+                </div>
+                <div className="flex flex-col gap-2 flex-shrink-0">
+                    <a
+                        href="/"
+                        className="h-11 px-5 rounded-lg bg-yellow text-black text-sm font-bold flex items-center justify-center gap-2 hover:bg-yellow/90 transition-colors"
+                    >
+                        Try GitNaadu
+                        <ArrowRight className="w-4 h-4" />
+                    </a>
+                    <a
+                        href={COURSE_URL}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="h-11 sm:h-9 px-5 rounded-lg border border-surface-3 text-sm sm:text-xs font-semibold text-zinc-200 flex items-center justify-center gap-2 hover:bg-surface-2 transition-colors"
+                    >
+                        <Youtube className="w-4 h-4 text-yellow" />
+                        Watch the course
+                    </a>
+                </div>
             </div>
         </div>
     </div>
@@ -130,6 +147,14 @@ export const VerifyPage = ({ code }) => {
                     </Row>
                     <Row label="Issued by">{CERT.brand.name}</Row>
                 </dl>
+
+                <div className="mt-5">
+                    <CertificateShare
+                        url={data.verifyUrl}
+                        text={`${cert.name} completed all the hands-on ${CERT.course} challenges on GitNaadu by ${CERT.brand.name}:`}
+                        label="Share this certificate"
+                    />
+                </div>
             </div>
         </Shell>
     );

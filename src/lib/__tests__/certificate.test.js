@@ -7,6 +7,8 @@ import {
     formatDateKey,
     certificateData,
     SITE_URL,
+    shareLinks,
+    linkedInAddUrl,
 } from "../certificateLink";
 import { cleanDetails, validateDetails } from "../certificateForm";
 
@@ -84,5 +86,32 @@ describe("certificate details form", () => {
     test("each bad field is reported", () => {
         const errors = validateDetails(cleanDetails({ name: "1", email: "nope", phone: "123", orgType: "x", orgName: "" }));
         expect(Object.keys(errors).sort()).toEqual(["email", "name", "orgName", "orgType", "phone"]);
+    });
+});
+
+describe("certificate sharing", () => {
+    const url = "https://gitnaadu.engineeringinkannada.in/?cert=abc";
+
+    test("share links carry the encoded verification URL", () => {
+        const links = shareLinks(url, "I did it & more");
+        for (const link of Object.values(links)) expect(link).toContain(encodeURIComponent(url));
+        expect(new URL(links.x).searchParams.get("text")).toBe("I did it & more");
+        expect(new URL(links.whatsapp).searchParams.get("text")).toBe(`I did it & more ${url}`);
+        expect(new URL(links.linkedin).searchParams.get("url")).toBe(url);
+        expect(new URL(links.facebook).searchParams.get("u")).toBe(url);
+    });
+
+    test("LinkedIn add-to-profile link is pre-filled", () => {
+        const p = new URL(
+            linkedInAddUrl({ url, dateKey: "20261118", course: "Git & GitHub", organization: "Engineering in Kannada" }),
+        ).searchParams;
+        expect(Object.fromEntries(p)).toEqual({
+            startTask: "CERTIFICATION_NAME",
+            name: "Git & GitHub",
+            organizationName: "Engineering in Kannada",
+            issueYear: "2026",
+            issueMonth: "11",
+            certUrl: url,
+        });
     });
 });
