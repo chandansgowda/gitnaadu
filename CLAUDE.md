@@ -85,6 +85,10 @@ Below Tailwind's `lg` breakpoint (`useIsMobile` in `src/hooks/useViewport.js`) `
 
 Guided lessons live in `src/lib/challenges.js`; `useChallenges` watches the latest `lastCommand` / `highlight` to auto-advance steps, and progress is stored in `state.challenges`.
 
+### Certificate
+
+Finishing every challenge unlocks a certificate (`CertificateDialog`, lazy-loaded from `App.js`). The learner's details are POSTed to a Google Form (`src/lib/certificateForm.js` holds the form id and `entry.*` field ids; the request is `no-cors`, so success can't be confirmed). The certificate is drawn on a canvas and exported as PDF / PNG in `src/lib/certificate.js`. Its QR code links to `/?cert=<base64 of name|YYYYMMDD|check>` (`src/lib/certificateLink.js`), which `src/index.js` routes to the public `VerifyPage` instead of the playground. The check code only catches hand-edited links; it is computed client-side and is not proof of completion. None of this lives in the main state object: the browser keeps just `{ name, dateKey }` under `localStorage["gitnaadu:certificate"]`. `public/privacy.html` is the policy the form links to.
+
 ## Conventions
 
 - `@/` import alias maps to `src/` (configured in both `webpack.config.js` and `jsconfig.json`), though most existing files use relative imports.

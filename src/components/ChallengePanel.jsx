@@ -17,6 +17,8 @@ import {
     RotateCcw,
     Flag,
     Clock,
+    Award,
+    Lock,
 } from "lucide-react";
 
 const DIFF_COLORS = {
@@ -40,6 +42,7 @@ export const ChallengePanel = ({
     viewMode,
     onViewList,
     onViewActive,
+    onOpenCertificate,
     side = "right",
 }) => {
     const stats = useMemo(() => {
@@ -100,6 +103,8 @@ export const ChallengePanel = ({
                         stepIndex={stepIndex}
                         onStop={onStop}
                         onViewList={onViewList}
+                        allDone={stats.total > 0 && challenges.all.every((c) => completed?.[c.id])}
+                        onOpenCertificate={onOpenCertificate}
                     />
                 ) : (
                     <ChallengeList
@@ -113,6 +118,7 @@ export const ChallengePanel = ({
                         }}
                         onReset={onReset}
                         onResetOne={onResetOne}
+                        onOpenCertificate={onOpenCertificate}
                     />
                 )}
             </SheetContent>
@@ -120,12 +126,67 @@ export const ChallengePanel = ({
     );
 };
 
-const ChallengeList = ({ challenges, progress, completed, activeId, onStart, onReset, onResetOne }) => {
+// Locked until every challenge is done, then opens the certificate dialog.
+const CertificateCard = ({ done, total, onOpen }) => {
+    const unlocked = total > 0 && done >= total;
+    if (unlocked)
+        return (
+            <button
+                onClick={onOpen}
+                className="w-full text-left px-4 py-3 flex items-center gap-3 rounded-md border border-yellow/60 bg-gradient-to-br from-yellow/15 to-yellow/0 hover:from-yellow/25 transition-colors focus:outline-none focus:ring-1 focus:ring-yellow/60"
+                data-testid="certificate-card"
+            >
+                <div className="w-9 h-9 rounded-md flex items-center justify-center flex-shrink-0 bg-yellow text-black">
+                    <Award className="w-5 h-5" />
+                </div>
+                <div className="min-w-0 flex-1">
+                    <div className="font-bold text-sm text-white">Your certificate is ready</div>
+                    <p className="text-[11px] text-zinc-300 leading-snug mt-0.5">
+                        All {total} challenges done. Claim your certificate of completion.
+                    </p>
+                </div>
+                <ChevronRight className="w-4 h-4 text-yellow flex-shrink-0" />
+            </button>
+        );
+    return (
+        <div
+            className="px-4 py-3 flex items-center gap-3 rounded-md border border-dashed border-surface-3 bg-surface-2/20"
+            data-testid="certificate-card"
+        >
+            <div className="w-9 h-9 rounded-md flex items-center justify-center flex-shrink-0 bg-surface-2 text-zinc-500 border border-surface-3">
+                <Lock className="w-4 h-4" />
+            </div>
+            <div className="min-w-0 flex-1">
+                <div className="font-bold text-sm text-zinc-300">Certificate of completion</div>
+                <p className="text-[11px] text-zinc-500 leading-snug mt-0.5">
+                    Finish all {total} challenges to unlock it.
+                </p>
+                <div className="mt-2 flex items-center gap-2">
+                    <div className="flex-1 h-1 rounded-full bg-surface-3 overflow-hidden">
+                        <div
+                            className="h-full bg-yellow transition-all"
+                            style={{ width: `${total ? Math.round((done / total) * 100) : 0}%` }}
+                        />
+                    </div>
+                    <span className="text-[10px] font-mono text-zinc-500">
+                        {done}/{total}
+                    </span>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+const ChallengeList = ({ challenges, progress, completed, activeId, onStart, onReset, onResetOne, onOpenCertificate }) => {
+    const doneCount = challenges.filter((c) => completed[c.id]).length;
     return (
         <div className="flex-1 overflow-auto" data-testid="challenge-list">
             <div className="px-5 py-3 text-[11px] text-zinc-400 leading-relaxed">
                 Pick a quest. Run the suggested commands in the terminal — each
                 step auto-completes when its goal is reached.
+            </div>
+            <div className="px-3 pb-2">
+                <CertificateCard done={doneCount} total={challenges.length} onOpen={onOpenCertificate} />
             </div>
             <ul className="px-3 pb-3 space-y-2">
                 {challenges.map((c) => {
@@ -237,7 +298,7 @@ const ChallengeList = ({ challenges, progress, completed, activeId, onStart, onR
     );
 };
 
-const ActiveChallenge = ({ challenge, stepIndex, onStop, onViewList }) => {
+const ActiveChallenge = ({ challenge, stepIndex, onStop, onViewList, allDone, onOpenCertificate }) => {
     const done = stepIndex >= challenge.steps.length;
     const progress = Math.round((stepIndex / challenge.steps.length) * 100);
 
@@ -353,10 +414,25 @@ const ActiveChallenge = ({ challenge, stepIndex, onStop, onViewList }) => {
                             <p className="text-xs text-zinc-300 leading-relaxed">
                                 {challenge.outro}
                             </p>
+                            {allDone && (
+                                <Button
+                                    size="sm"
+                                    onClick={onOpenCertificate}
+                                    className="mt-3 mr-2 h-9 sm:h-7 bg-yellow text-black hover:bg-yellow/90 font-semibold"
+                                    data-testid="challenge-get-certificate"
+                                >
+                                    <Award className="w-3.5 h-3.5 mr-1" />
+                                    Get your certificate
+                                </Button>
+                            )}
                             <Button
                                 size="sm"
                                 onClick={onViewList}
-                                className="mt-3 h-7 bg-yellow text-black hover:bg-yellow/90 font-semibold"
+                                variant={allDone ? "ghost" : "default"}
+                                className={
+                                    "mt-3 h-9 sm:h-7 font-semibold " +
+                                    (allDone ? "text-zinc-300 hover:text-white" : "bg-yellow text-black hover:bg-yellow/90")
+                                }
                                 data-testid="challenge-back-to-list"
                             >
                                 <ChevronLeft className="w-3.5 h-3.5 mr-1" />

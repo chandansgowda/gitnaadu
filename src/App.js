@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useCallback } from "react";
+import { useState, useMemo, useEffect, useCallback, useRef, lazy, Suspense } from "react";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "./components/ui/tabs";
 import { Header } from "./components/Header";
 import { Terminal } from "./components/Terminal";
@@ -25,6 +25,11 @@ import { Toaster } from "./components/ui/sonner";
 import { AnimatePresence, motion } from "framer-motion";
 import { MobileNav } from "./components/MobileNav";
 import { useIsMobile, useVisualViewport } from "./hooks/useViewport";
+
+// Loaded on demand: only learners who finish every challenge need it.
+const CertificateDialog = lazy(() =>
+    import("./components/CertificateDialog").then((m) => ({ default: m.CertificateDialog })),
+);
 
 const TREE_KINDS = new Set([
     "git-init",
@@ -113,6 +118,30 @@ export default function App() {
     useEffect(() => {
         if (shouldShowWelcome()) setWelcomeOpen(true);
     }, []);
+
+    // The certificate unlocks when every challenge is complete; it's dated
+    // with the day the last one was finished.
+    const allChallengesDone =
+        challenges.all.length > 0 && challenges.all.every((c) => challenges.completed[c.id]);
+    const certificateDate = useMemo(() => {
+        const dates = Object.values(challenges.completed || {}).filter((d) => typeof d === "string");
+        return dates.length ? dates.reduce((a, b) => (a > b ? a : b)) : null;
+    }, [challenges.completed]);
+    const [certificateOpen, setCertificateOpen] = useState(false);
+    // Stays true once opened so the dialog can animate out when closed.
+    const [certificateLoaded, setCertificateLoaded] = useState(false);
+    useEffect(() => {
+        if (certificateOpen) setCertificateLoaded(true);
+    }, [certificateOpen]);
+    // Offer it the moment the last challenge is finished (not on every reload).
+    const wasAllDone = useRef(allChallengesDone);
+    useEffect(() => {
+        if (allChallengesDone && !wasAllDone.current) {
+            setChallengesOpen(false);
+            setCertificateOpen(true);
+        }
+        wasAllDone.current = allChallengesDone;
+    }, [allChallengesDone]);
 
     const repo = useMemo(
         () => findRepo(state.repos, state.cwd),
@@ -339,7 +368,21 @@ export default function App() {
                 viewMode={challengeView}
                 onViewList={() => setChallengeView("list")}
                 onViewActive={() => setChallengeView("active")}
+                onOpenCertificate={() => {
+                    setChallengesOpen(false);
+                    setCertificateOpen(true);
+                    sound.play("success");
+                }}
             />
+            {(certificateOpen || certificateLoaded) && (
+                <Suspense fallback={null}>
+                    <CertificateDialog
+                        open={certificateOpen && allChallengesDone}
+                        onOpenChange={setCertificateOpen}
+                        completedAt={certificateDate}
+                    />
+                </Suspense>
+            )}
             <Toaster
                 position={isMobile ? "top-center" : "top-right"}
                 // Below the header, which itself sits below the status bar /
