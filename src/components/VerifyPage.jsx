@@ -1,60 +1,37 @@
 import { useEffect, useMemo, useRef } from "react";
-import { ArrowRight, BadgeCheck, GitBranch, ShieldAlert, Youtube } from "lucide-react";
+import { GitBranch } from "lucide-react";
 import { CERT, CERT_W, drawCertificate, loadCertFonts } from "../lib/certificate";
 import { certificateData, decodeCertificate } from "../lib/certificateLink";
-import { CertificateShare } from "./CertificateShare";
-
-const COURSE_URL = "https://www.youtube.com/@EngineeringinKannada";
 
 // Public page behind the QR code on a certificate: `/?cert=<code>`. It reads
 // everything from the link, so it never touches the visitor's saved playground.
 const Shell = ({ children }) => (
     <div className="fixed inset-0 overflow-y-auto bg-surface-0 text-white" data-testid="verify-page">
         <div className="mx-auto w-full max-w-3xl px-4 sm:px-6 pt-5 pb-10 sm:pt-8 sm:pb-14">
-            <a href="/" className="inline-flex items-center gap-2.5 mb-6 sm:mb-8 group">
-                <span className="w-9 h-9 rounded-lg bg-yellow text-black flex items-center justify-center">
-                    <GitBranch className="w-5 h-5" strokeWidth={2.5} />
+            <a href="/" className="inline-flex items-center gap-2.5 mb-8">
+                <span className="w-8 h-8 rounded-md bg-yellow text-black flex items-center justify-center">
+                    <GitBranch className="w-4 h-4" strokeWidth={2.5} />
                 </span>
-                <span className="font-black text-lg tracking-tight group-hover:text-yellow transition-colors">
-                    GitNaadu
-                </span>
+                <span className="font-bold text-base tracking-tight">GitNaadu</span>
             </a>
             {children}
-            <div className="mt-8 rounded-xl border border-surface-3 bg-surface-1 p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-5">
-                <div className="flex-1">
-                    <p className="text-sm font-bold text-white">Want one with your name on it?</p>
-                    <p className="mt-1 text-sm text-zinc-400 leading-relaxed">
-                        GitNaadu is a free playground by {CERT.brand.name} for learning Git by doing, right in
-                        the browser. Finish every challenge and you get this certificate too.
-                    </p>
-                </div>
-                <div className="flex flex-col gap-2 flex-shrink-0">
-                    <a
-                        href="/"
-                        className="h-11 px-5 rounded-lg bg-yellow text-black text-sm font-bold flex items-center justify-center gap-2 hover:bg-yellow/90 transition-colors"
-                    >
-                        Try GitNaadu
-                        <ArrowRight className="w-4 h-4" />
-                    </a>
-                    <a
-                        href={COURSE_URL}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="h-11 sm:h-9 px-5 rounded-lg border border-surface-3 text-sm sm:text-xs font-semibold text-zinc-200 flex items-center justify-center gap-2 hover:bg-surface-2 transition-colors"
-                    >
-                        <Youtube className="w-4 h-4 text-yellow" />
-                        Watch the course
-                    </a>
-                </div>
-            </div>
+            <p className="mt-8 pt-5 border-t border-surface-3 text-sm text-zinc-400 leading-relaxed">
+                GitNaadu is a free Git playground by {CERT.brand.name}.{" "}
+                <a href="/" className="text-yellow underline underline-offset-2 hover:text-white">
+                    Try it
+                </a>{" "}
+                or{" "}
+                <a
+                    href={CERT.courseUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-yellow underline underline-offset-2 hover:text-white"
+                >
+                    watch the course
+                </a>
+                .
+            </p>
         </div>
-    </div>
-);
-
-const Row = ({ label, children }) => (
-    <div className="flex items-baseline justify-between gap-4 py-2.5 border-b border-surface-3 last:border-0">
-        <dt className="text-xs uppercase tracking-wider text-zinc-500 flex-shrink-0">{label}</dt>
-        <dd className="text-sm font-semibold text-right break-words min-w-0">{children}</dd>
     </div>
 );
 
@@ -98,15 +75,8 @@ export const VerifyPage = ({ code }) => {
     if (!cert)
         return (
             <Shell>
-                <div
-                    className="rounded-xl border border-rose-500/40 bg-rose-500/[0.06] p-5 sm:p-6"
-                    data-testid="verify-invalid"
-                >
-                    <div className="flex items-center gap-2 text-rose-400 text-xs font-bold uppercase tracking-[0.16em]">
-                        <ShieldAlert className="w-4 h-4" />
-                        Not a valid certificate
-                    </div>
-                    <h1 className="mt-2 text-2xl font-black tracking-tight">We couldn't read this certificate link</h1>
+                <div data-testid="verify-invalid">
+                    <h1 className="text-2xl font-bold tracking-tight">This certificate link isn't valid</h1>
                     <p className="mt-2 text-sm text-zinc-400 leading-relaxed">
                         The link is incomplete or was changed. Scan the QR code on the certificate again, or ask
                         its owner for the original link.
@@ -118,17 +88,14 @@ export const VerifyPage = ({ code }) => {
     return (
         <Shell>
             <div data-testid="verify-valid">
-                <div className="flex items-center gap-2 text-emerald-400 text-xs font-bold uppercase tracking-[0.16em]">
-                    <BadgeCheck className="w-4 h-4" />
-                    GitNaadu certificate
-                </div>
-                <h1 className="mt-2 text-2xl sm:text-3xl font-black tracking-tight break-words" data-testid="verify-name">
+                <p className="text-sm text-zinc-400">Certificate of completion</p>
+                <h1 className="mt-1 text-2xl sm:text-3xl font-bold tracking-tight break-words" data-testid="verify-name">
                     {cert.name}
                 </h1>
-                <p className="mt-1.5 text-sm text-zinc-400 leading-relaxed">
-                    completed all hands-on challenges of the {CERT.course} course on GitNaadu.
+                <p className="mt-2 text-sm text-zinc-300 leading-relaxed">
+                    Completed all hands-on challenges of the {CERT.course} course on GitNaadu. Issued on{" "}
+                    <span data-testid="verify-date">{data.dateText}</span> by {CERT.brand.name}.
                 </p>
-
                 <div className="mt-5 rounded-lg overflow-hidden border border-surface-3 leading-[0]">
                     <canvas
                         ref={canvasRef}
@@ -136,23 +103,6 @@ export const VerifyPage = ({ code }) => {
                         role="img"
                         aria-label={`Certificate of completion for ${cert.name}`}
                         data-testid="verify-canvas"
-                    />
-                </div>
-
-                <dl className="mt-5 rounded-xl border border-surface-3 bg-surface-1 px-4 sm:px-5 py-1.5">
-                    <Row label="Awarded to">{cert.name}</Row>
-                    <Row label="Course">{CERT.course}</Row>
-                    <Row label="Date of issue">
-                        <span data-testid="verify-date">{data.dateText}</span>
-                    </Row>
-                    <Row label="Issued by">{CERT.brand.name}</Row>
-                </dl>
-
-                <div className="mt-5">
-                    <CertificateShare
-                        url={data.verifyUrl}
-                        text={`${cert.name} completed all the hands-on ${CERT.course} challenges on GitNaadu by ${CERT.brand.name}:`}
-                        label="Share this certificate"
                     />
                 </div>
             </div>

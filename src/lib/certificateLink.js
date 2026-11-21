@@ -100,13 +100,27 @@ export const verifyUrl = (name, dateKey, base = SITE_URL) =>
 // ---- sharing ----
 const enc = encodeURIComponent;
 
-// Share-intent links for the verification URL. `text` goes with the link
-// where the network accepts one (LinkedIn and Facebook only take the URL).
-export const shareLinks = (url, text) => ({
-    linkedin: `https://www.linkedin.com/sharing/share-offsite/?url=${enc(url)}`,
-    x: `https://twitter.com/intent/tweet?text=${enc(text)}&url=${enc(url)}`,
-    whatsapp: `https://wa.me/?text=${enc(`${text} ${url}`)}`,
-    facebook: `https://www.facebook.com/sharer/sharer.php?u=${enc(url)}`,
+// Ready-made post for the share buttons: `long` for LinkedIn / WhatsApp,
+// `short` for X (which has a character limit). The learner can edit it
+// before posting.
+export const sharePost = ({ url, course, organization, courseUrl, siteUrl = SITE_URL }) => ({
+    long: [
+        `I just completed all the hands-on ${course} challenges on GitNaadu by ${organization} and earned my certificate!`,
+        "",
+        `My certificate: ${url}`,
+        `Practice Git in your browser: ${siteUrl}`,
+        ...(courseUrl ? [`Watch the full course: ${courseUrl}`] : []),
+        "",
+        "#Git #GitHub #GitNaadu #EngineeringInKannada",
+    ].join("\n"),
+    short: `I completed all the hands-on ${course} challenges on GitNaadu by ${organization} and earned my certificate! ${url} #Git #GitHub #GitNaadu`,
+});
+
+// Share links that open with the post already written.
+export const shareLinks = (post) => ({
+    linkedin: `https://www.linkedin.com/feed/?shareActive=true&text=${enc(post.long)}`,
+    x: `https://twitter.com/intent/tweet?text=${enc(post.short)}`,
+    whatsapp: `https://wa.me/?text=${enc(post.long)}`,
 });
 
 // LinkedIn's "add to profile" form, pre-filled under Licenses & certifications.

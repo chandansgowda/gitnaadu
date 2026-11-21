@@ -13,7 +13,7 @@ command parser all live in `src/lib/`.
 Complete all the guided challenges and GitNaadu issues a free certificate of
 completion from Engineering in Kannada. Learners enter their name, email, phone
 and college or company (sent to a Google Form), then download the certificate
-as PDF or PNG or share it on LinkedIn, X, WhatsApp and Facebook. Each
+as PDF or PNG or share it on LinkedIn, X and WhatsApp with a ready-made post. Each
 certificate carries a QR code that opens a public page showing it
 (`/?cert=<code>`). See `src/lib/certificateForm.js` to point it at a different
 form, and `public/privacy.html` for the privacy policy.

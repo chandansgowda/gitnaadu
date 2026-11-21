@@ -18,6 +18,10 @@ export const CERT = {
         name: "Chandan S Gowda", // cursive signature + printed name
         title: "Engineering in Kannada",
     },
+    // Linked from the verification page and from shared posts.
+    courseUrl: "https://www.youtube.com/@EngineeringinKannada",
+    // Where the verification QR code sits along the bottom: "left" | "right".
+    qrPosition: "left",
 };
 
 const FONTS_HREF =
@@ -177,12 +181,12 @@ const drawSignature = (ctx, cx, baseline) => {
     ctx.restore();
 };
 
-// QR code for the verification link, top-right corner. Dark modules are drawn
-// straight onto the paper, which doubles as the quiet zone.
-const drawVerifyQr = (ctx, url) => {
-    const size = 100;
-    const x = W - 56 - size;
-    const y = 56;
+// QR code for the verification link, in a bottom corner. Dark modules are
+// drawn straight onto the paper, which doubles as the quiet zone.
+const drawVerifyQr = (ctx, url, position) => {
+    const size = 92;
+    const x = position === "right" ? W - 64 - size : 64;
+    const y = H - 64 - size - 8;
     let qr;
     try {
         // Lowest error correction: fewer, larger modules scan best from a
@@ -201,10 +205,10 @@ const drawVerifyQr = (ctx, url) => {
             if (qr.isDark(r, c)) ctx.fillRect(x + c * cell, y + r * cell, cell + 0.06, cell + 0.06);
     ctx.fillStyle = COLOR.muted;
     ctx.font = `600 8px ${FONT.sans}`;
-    spaced(ctx, "SCAN TO VERIFY", x + size / 2, y + size + 16, 1.3);
+    spaced(ctx, "SCAN TO VERIFY", x + size / 2, y + size + 14, 1.3);
 };
 
-// Draw the certificate onto `canvas`. data: { name, dateText, verifyUrl? }.
+// Draw the certificate onto `canvas`. data: { name, dateText, verifyUrl?, qrPosition? }.
 export const drawCertificate = (canvas, data, scale = 1) => {
     canvas.width = Math.round(W * scale);
     canvas.height = Math.round(H * scale);
@@ -263,10 +267,13 @@ export const drawCertificate = (canvas, data, scale = 1) => {
     fit(ctx, CERT.course, (s) => `600 ${s}px ${FONT.serif}`, 800, 40, 20);
     ctx.fillText(CERT.course, CX, 474);
 
-    // footer: date | seal | signature
+    // footer: date | seal | signature. With a QR code in a bottom corner the
+    // two outer columns move in to leave it room.
+    const qrPosition = data.verifyUrl ? data.qrPosition || CERT.qrPosition : null;
     const fy = 640;
-    const lx = 258;
-    const rx = W - 258;
+    const inset = qrPosition ? 330 : 258;
+    const lx = inset;
+    const rx = W - inset;
     ctx.fillStyle = COLOR.ink;
     ctx.font = `400 21px ${FONT.serif}`;
     ctx.fillText(data.dateText, lx, fy);
@@ -285,7 +292,7 @@ export const drawCertificate = (canvas, data, scale = 1) => {
     ctx.fillText(CERT.issuer.title, rx, fy + 51);
 
     drawSeal(ctx, CX, 636);
-    if (data.verifyUrl) drawVerifyQr(ctx, data.verifyUrl);
+    if (qrPosition) drawVerifyQr(ctx, data.verifyUrl, qrPosition);
     return canvas;
 };
 

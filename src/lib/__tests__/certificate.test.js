@@ -8,6 +8,7 @@ import {
     certificateData,
     SITE_URL,
     shareLinks,
+    sharePost,
     linkedInAddUrl,
 } from "../certificateLink";
 import { cleanDetails, validateDetails } from "../certificateForm";
@@ -92,13 +93,23 @@ describe("certificate details form", () => {
 describe("certificate sharing", () => {
     const url = "https://gitnaadu.engineeringinkannada.in/?cert=abc";
 
-    test("share links carry the encoded verification URL", () => {
-        const links = shareLinks(url, "I did it & more");
-        for (const link of Object.values(links)) expect(link).toContain(encodeURIComponent(url));
-        expect(new URL(links.x).searchParams.get("text")).toBe("I did it & more");
-        expect(new URL(links.whatsapp).searchParams.get("text")).toBe(`I did it & more ${url}`);
-        expect(new URL(links.linkedin).searchParams.get("url")).toBe(url);
-        expect(new URL(links.facebook).searchParams.get("u")).toBe(url);
+    test("the post names the certificate link, the site and the course", () => {
+        const post = sharePost({ url, course: "Git & GitHub", organization: "Engineering in Kannada", courseUrl: "https://example.com/course" });
+        for (const part of [url, SITE_URL, "https://example.com/course", "Git & GitHub", "#GitNaadu"]) expect(post.long).toContain(part);
+        expect(post.short).toContain(url);
+        // X counts any link as 23 characters.
+        expect(post.short.replace(url, "x".repeat(23)).length).toBeLessThanOrEqual(280);
+        expect(sharePost({ url, course: "Git", organization: "EiK" }).long).not.toContain("Watch the full course");
+    });
+
+    test("every share link opens with the post text filled in", () => {
+        const post = { long: "Line one & more\nLine two " + url, short: "Short " + url };
+        const links = shareLinks(post);
+        expect(Object.keys(links)).toEqual(["linkedin", "x", "whatsapp"]);
+        expect(new URL(links.linkedin).searchParams.get("text")).toBe(post.long);
+        expect(new URL(links.linkedin).searchParams.get("shareActive")).toBe("true");
+        expect(new URL(links.x).searchParams.get("text")).toBe(post.short);
+        expect(new URL(links.whatsapp).searchParams.get("text")).toBe(post.long);
     });
 
     test("LinkedIn add-to-profile link is pre-filled", () => {

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Award, BadgePlus, Check, Download, Link2, Loader2, Pencil, Share2 } from "lucide-react";
+import { Check, Download, Link2, Loader2, Share2 } from "lucide-react";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "./ui/dialog";
 import {
     CERT,
@@ -12,8 +12,7 @@ import {
     makeCertPng,
 } from "../lib/certificate";
 import { cleanDetails, submitDetails, validateDetails } from "../lib/certificateForm";
-import { certificateData, linkedInAddUrl, toDateKey } from "../lib/certificateLink";
-import { CertificateShare } from "./CertificateShare";
+import { certificateData, linkedInAddUrl, shareLinks, sharePost, toDateKey } from "../lib/certificateLink";
 
 // Only the name and date of issue are remembered (to redraw the certificate
 // next time); contact details are sent once and not kept in the browser.
@@ -36,18 +35,22 @@ const writeSaved = (v) => {
     }
 };
 
-const PRIVACY_URL = "/privacy.html";
-
 const EMPTY = { name: "", email: "", phone: "", orgType: "college", orgName: "" };
+
+const PRIVACY_URL = "/privacy.html";
 
 const INPUT_CLS =
     "w-full h-11 rounded-lg bg-surface-0 border px-3.5 text-base sm:text-sm text-white placeholder:text-zinc-600 outline-none transition-colors focus:border-yellow/70 ";
 
-const Field = ({ id, label, hint, error, children }) => (
+const PRIMARY_BTN =
+    "h-11 px-4 rounded-lg bg-yellow text-black text-sm font-bold flex items-center justify-center gap-2 hover:bg-yellow/90 disabled:opacity-60 transition-colors";
+const SECONDARY_BTN =
+    "h-11 px-4 rounded-lg bg-surface-2 border border-surface-3 text-white text-sm font-semibold flex items-center justify-center gap-2 hover:bg-surface-3 disabled:opacity-50 transition-colors";
+
+const Field = ({ id, label, error, children }) => (
     <div>
         <label htmlFor={id} className="block mb-1.5 text-xs font-semibold text-zinc-300">
             {label}
-            {hint && <span className="ml-1.5 font-normal text-zinc-500">{hint}</span>}
         </label>
         {children}
         {error && (
@@ -58,12 +61,16 @@ const Field = ({ id, label, hint, error, children }) => (
     </div>
 );
 
-const DetailsForm = ({ initialName, onDone }) => {
-    const [values, setValues] = useState({ ...EMPTY, name: initialName || "" });
+// Two steps: fill in the details, then confirm the name. Nothing is sent, and
+// no certificate is issued, until the name is confirmed, because it can't be
+// changed afterwards.
+const DetailsForm = ({ onDone }) => {
+    const [values, setValues] = useState(EMPTY);
     const [errors, setErrors] = useState({});
+    const [agreed, setAgreed] = useState(false);
+    const [confirming, setConfirming] = useState(null); // cleaned details awaiting confirmation
     const [busy, setBusy] = useState(false);
     const [failed, setFailed] = useState(false);
-    const [agreed, setAgreed] = useState(false);
 
     const set = (key) => (e) => {
         const value = e.target.value;
@@ -71,9 +78,8 @@ const DetailsForm = ({ initialName, onDone }) => {
         setErrors((er) => (er[key] ? { ...er, [key]: undefined } : er));
     };
 
-    const submit = async (e) => {
+    const review = (e) => {
         e.preventDefault();
-        if (busy) return;
         const details = cleanDetails(values);
         const found = validateDetails(details);
         if (!agreed) found.agree = "Please agree to the privacy policy to continue.";
@@ -83,11 +89,17 @@ const DetailsForm = ({ initialName, onDone }) => {
             document.getElementById(`cert-${firstBad}`)?.focus();
             return;
         }
+        setFailed(false);
+        setConfirming(details);
+    };
+
+    const confirm = async () => {
+        if (busy) return;
         setBusy(true);
         setFailed(false);
         try {
-            await submitDetails(details);
-            onDone(details.name);
+            await submitDetails(confirming);
+            onDone(confirming.name);
         } catch {
             setFailed(true);
         } finally {
@@ -95,12 +107,54 @@ const DetailsForm = ({ initialName, onDone }) => {
         }
     };
 
+    if (confirming)
+        return (
+            <div data-testid="certificate-confirm">
+                <p className="text-sm text-zinc-400">Your certificate will be issued to</p>
+                <p
+                    className="mt-2 rounded-lg border border-surface-3 bg-surface-0 px-4 py-4 text-xl font-bold text-white text-center break-words"
+                    data-testid="certificate-confirm-name"
+                >
+                    {confirming.name}
+                </p>
+                <p className="mt-3 text-sm text-zinc-300 leading-relaxed">
+                    Check the spelling. The name can't be changed once the certificate is generated.
+                </p>
+                {failed && (
+                    <p className="mt-3 text-xs text-rose-400" role="alert">
+                        Couldn't send your details. Check your internet connection and try again.
+                    </p>
+                )}
+                <div className="mt-5 flex flex-col-reverse sm:flex-row gap-2">
+                    <button
+                        type="button"
+                        onClick={() => setConfirming(null)}
+                        disabled={busy}
+                        className={SECONDARY_BTN + " sm:flex-1"}
+                        data-testid="certificate-back-btn"
+                    >
+                        Go back and edit
+                    </button>
+                    <button
+                        type="button"
+                        onClick={confirm}
+                        disabled={busy}
+                        className={PRIMARY_BTN + " sm:flex-1"}
+                        data-testid="certificate-confirm-btn"
+                    >
+                        {busy && <Loader2 className="w-4 h-4 animate-spin" />}
+                        {busy ? "Generating..." : "Confirm and generate"}
+                    </button>
+                </div>
+            </div>
+        );
+
     const border = (key) => (errors[key] ? "border-rose-500/70" : "border-surface-3");
     const orgWord = values.orgType === "company" ? "Company" : "College";
 
     return (
-        <form onSubmit={submit} noValidate className="space-y-4" data-testid="certificate-form">
-            <Field id="cert-name" label="Full name" hint="as it should appear on the certificate" error={errors.name}>
+        <form onSubmit={review} noValidate className="space-y-4" data-testid="certificate-form">
+            <Field id="cert-name" label="Name on the certificate" error={errors.name}>
                 <input
                     id="cert-name"
                     className={INPUT_CLS + border("name")}
@@ -109,7 +163,7 @@ const DetailsForm = ({ initialName, onDone }) => {
                     maxLength={48}
                     autoComplete="name"
                     spellCheck={false}
-                    placeholder="English or ಕನ್ನಡ"
+                    placeholder="Your Name"
                 />
             </Field>
 
@@ -226,20 +280,8 @@ const DetailsForm = ({ initialName, onDone }) => {
                 )}
             </div>
 
-            {failed && (
-                <p className="text-xs text-rose-400" role="alert">
-                    Couldn't send your details. Check your internet connection and try again.
-                </p>
-            )}
-
-            <button
-                type="submit"
-                disabled={busy}
-                className="w-full h-11 rounded-lg bg-yellow text-black text-sm font-bold flex items-center justify-center gap-2 hover:bg-yellow/90 disabled:opacity-60 transition-colors"
-                data-testid="certificate-submit"
-            >
-                {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Award className="w-4 h-4" />}
-                {busy ? "Preparing your certificate..." : "Get my certificate"}
+            <button type="submit" className={PRIMARY_BTN + " w-full"} data-testid="certificate-submit">
+                Continue
             </button>
         </form>
     );
@@ -254,12 +296,29 @@ const canShareFiles = () => {
     }
 };
 
-const CertificateView = ({ name, dateKey, onEdit }) => {
+const SHARE_TARGETS = [
+    ["linkedin", "LinkedIn"],
+    ["x", "X"],
+    ["whatsapp", "WhatsApp"],
+];
+
+const CertificateView = ({ name, dateKey }) => {
     const data = useMemo(() => certificateData(name, dateKey), [name, dateKey]);
-    const [copied, setCopied] = useState(false);
+    const post = useMemo(
+        () =>
+            sharePost({
+                url: data.verifyUrl,
+                course: CERT.course,
+                organization: CERT.brand.name,
+                courseUrl: CERT.courseUrl,
+            }),
+        [data],
+    );
+    const links = useMemo(() => shareLinks(post), [post]);
     const canvasRef = useRef(null);
     const [busy, setBusy] = useState(null); // "pdf" | "png" | "share" | null
     const [message, setMessage] = useState(null); // { text, error }
+    const [copied, setCopied] = useState(false);
     const [shareable] = useState(canShareFiles);
 
     // Draw at once with whatever fonts are available, then again when the
@@ -297,7 +356,7 @@ const CertificateView = ({ name, dateKey, onEdit }) => {
         setBusy(kind);
         setMessage(null);
         try {
-            await job(data);
+            await job();
         } catch (err) {
             if (err?.name !== "AbortError") {
                 console.error(err);
@@ -309,19 +368,19 @@ const CertificateView = ({ name, dateKey, onEdit }) => {
     };
 
     const savePdf = () =>
-        run("pdf", async (d) => {
-            downloadBlob(await makeCertPdf(d), certFileName(name, "pdf"));
+        run("pdf", async () => {
+            downloadBlob(await makeCertPdf(data), certFileName(name, "pdf"));
             setMessage({ text: "Downloaded." });
         });
     const savePng = () =>
-        run("png", async (d) => {
-            downloadBlob(await makeCertPng(d), certFileName(name, "png"));
+        run("png", async () => {
+            downloadBlob(await makeCertPng(data), certFileName(name, "png"));
             setMessage({ text: "Downloaded." });
         });
     const share = () =>
-        run("share", async (d) => {
-            const file = new File([await makeCertPng(d)], certFileName(name, "png"), { type: "image/png" });
-            await navigator.share({ files: [file], title: `${CERT.course} certificate`, text: d.verifyUrl });
+        run("share", async () => {
+            const file = new File([await makeCertPng(data)], certFileName(name, "png"), { type: "image/png" });
+            await navigator.share({ files: [file], title: `${CERT.course} certificate`, text: post.long });
         });
     const copyLink = async () => {
         try {
@@ -333,11 +392,10 @@ const CertificateView = ({ name, dateKey, onEdit }) => {
         }
     };
 
-    const btn =
-        "h-11 sm:h-10 px-4 rounded-lg text-sm font-semibold flex items-center justify-center gap-2 transition-colors disabled:opacity-50 flex-1 sm:flex-none ";
-    const secondary = "bg-surface-2 border border-surface-3 text-white hover:bg-surface-3";
     const icon = (kind, Icon) =>
         busy === kind ? <Loader2 className="w-4 h-4 animate-spin" /> : <Icon className="w-4 h-4" />;
+    const shareBtn =
+        "h-11 sm:h-9 px-3.5 rounded-lg bg-surface-2 border border-surface-3 text-sm sm:text-xs font-semibold text-white flex items-center justify-center gap-1.5 hover:bg-surface-3 disabled:opacity-50 transition-colors";
 
     return (
         <div data-testid="certificate-view">
@@ -350,72 +408,62 @@ const CertificateView = ({ name, dateKey, onEdit }) => {
                     data-testid="certificate-canvas"
                 />
             </div>
-            <div className="mt-4 flex flex-wrap items-center gap-2">
-                <button
-                    type="button"
-                    onClick={savePdf}
-                    disabled={!!busy}
-                    className={btn + "bg-yellow text-black hover:bg-yellow/90 basis-full sm:basis-auto"}
-                    data-testid="certificate-pdf"
-                >
+
+            <div className="mt-4 grid grid-cols-2 sm:flex gap-2">
+                <button type="button" onClick={savePdf} disabled={!!busy} className={PRIMARY_BTN} data-testid="certificate-pdf">
                     {icon("pdf", Download)}
                     Download PDF
                 </button>
-                <button type="button" onClick={savePng} disabled={!!busy} className={btn + secondary} data-testid="certificate-png">
+                <button type="button" onClick={savePng} disabled={!!busy} className={SECONDARY_BTN} data-testid="certificate-png">
                     {icon("png", Download)}
-                    PNG
+                    Download PNG
                 </button>
-                {shareable && (
-                    <button type="button" onClick={share} disabled={!!busy} className={btn + secondary}>
-                        {icon("share", Share2)}
-                        Share
+            </div>
+
+            <div className="mt-5" data-testid="certificate-share">
+                <p className="mb-2 text-xs font-semibold text-zinc-400">Share</p>
+                <div className="grid grid-cols-2 sm:flex sm:flex-wrap gap-2">
+                    {SHARE_TARGETS.map(([key, label]) => (
+                        <a
+                            key={key}
+                            href={links[key]}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className={shareBtn}
+                            data-testid={`share-${key}`}
+                        >
+                            {label}
+                        </a>
+                    ))}
+                    {shareable && (
+                        <button type="button" onClick={share} disabled={!!busy} className={shareBtn}>
+                            {icon("share", Share2)}
+                            More
+                        </button>
+                    )}
+                    <button type="button" onClick={copyLink} className={shareBtn} data-testid="certificate-copy-link">
+                        {copied ? <Check className="w-4 h-4 text-emerald-400" /> : <Link2 className="w-4 h-4" />}
+                        {copied ? "Copied" : "Copy link"}
                     </button>
-                )}
-            </div>
-            <div className="mt-5">
-                <CertificateShare
-                    url={data.verifyUrl}
-                    text={`I completed all the hands-on ${CERT.course} challenges on GitNaadu by ${CERT.brand.name}! Here is my certificate:`}
+                </div>
+                <a
+                    href={linkedInAddUrl({
+                        url: data.verifyUrl,
+                        dateKey,
+                        course: `${CERT.course} (GitNaadu)`,
+                        organization: CERT.brand.name,
+                    })}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="mt-3 inline-block text-xs text-zinc-400 underline underline-offset-2 hover:text-white"
+                    data-testid="share-linkedin-add"
                 >
-                    <a
-                        href={linkedInAddUrl({
-                            url: data.verifyUrl,
-                            dateKey,
-                            course: `${CERT.course} (GitNaadu)`,
-                            organization: CERT.brand.name,
-                        })}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="col-span-2 h-11 sm:h-9 px-3.5 rounded-lg border border-yellow/50 text-sm sm:text-xs font-semibold text-yellow flex items-center justify-center gap-2 hover:bg-yellow/10 transition-colors"
-                        data-testid="share-linkedin-add"
-                    >
-                        <BadgePlus className="w-4 h-4 sm:w-3.5 sm:h-3.5" />
-                        Add to LinkedIn profile
-                    </a>
-                </CertificateShare>
+                    Add it to your LinkedIn profile
+                </a>
             </div>
-            <div className="mt-3 flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
-                <button
-                    type="button"
-                    onClick={copyLink}
-                    className="h-9 text-xs text-zinc-400 hover:text-white flex items-center gap-1.5 transition-colors"
-                    data-testid="certificate-copy-link"
-                >
-                    {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Link2 className="w-3.5 h-3.5" />}
-                    {copied ? "Link copied" : "Copy verification link"}
-                </button>
-                <button
-                    type="button"
-                    onClick={onEdit}
-                    disabled={!!busy}
-                    className="h-9 text-xs text-zinc-400 hover:text-white flex items-center gap-1.5 transition-colors disabled:opacity-50"
-                >
-                    <Pencil className="w-3.5 h-3.5" />
-                    Change name
-                </button>
-            </div>
+
             <p
-                className={"mt-1 min-h-[16px] text-xs break-all " + (message?.error ? "text-rose-400" : "text-zinc-500")}
+                className={"mt-2 min-h-[16px] text-xs break-all " + (message?.error ? "text-rose-400" : "text-zinc-500")}
                 role="status"
             >
                 {message?.text}
@@ -426,10 +474,10 @@ const CertificateView = ({ name, dateKey, onEdit }) => {
 
 // Shown once every challenge is complete: collects the learner's details,
 // then issues the certificate. `completedAt` (ISO) is when the last challenge
-// was finished; its day becomes the date of issue.
+// was finished; its day becomes the date of issue. Once issued, the name is
+// fixed: there is no way back to the form.
 export const CertificateDialog = ({ open, onOpenChange, completedAt }) => {
     const [saved, setSaved] = useState(readSaved);
-    const [editing, setEditing] = useState(false);
 
     // Warm the fonts while the form is being filled in.
     useEffect(() => {
@@ -438,58 +486,36 @@ export const CertificateDialog = ({ open, onOpenChange, completedAt }) => {
 
     const onDone = useCallback(
         (name) => {
-            // Keep the first date of issue when only the name is corrected.
-            const next = {
-                name,
-                dateKey: saved?.dateKey || toDateKey(completedAt),
-                submittedAt: new Date().toISOString(),
-            };
+            const next = { name, dateKey: toDateKey(completedAt), submittedAt: new Date().toISOString() };
             writeSaved(next);
             setSaved(next);
-            setEditing(false);
         },
-        [saved, completedAt],
+        [completedAt],
     );
 
-    const showForm = !saved || editing;
-
     return (
-        <Dialog
-            open={open}
-            onOpenChange={(v) => {
-                if (!v) setEditing(false);
-                onOpenChange(v);
-            }}
-        >
+        <Dialog open={open} onOpenChange={onOpenChange}>
             <DialogContent
                 className={
                     "bg-surface-1 border-surface-3 text-white gap-0 p-5 sm:p-6 w-[calc(100vw-24px)] max-h-[92dvh] overflow-y-auto rounded-xl " +
-                    (showForm ? "max-w-md" : "max-w-3xl")
+                    (saved ? "max-w-3xl" : "max-w-md")
                 }
                 data-testid="certificate-dialog"
             >
                 <DialogHeader className="mb-5 pr-6 text-left space-y-1.5">
-                    <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-yellow flex items-center gap-1.5">
-                        <Award className="w-3.5 h-3.5" />
-                        Certificate
-                    </p>
-                    <DialogTitle className="text-xl font-black tracking-tight">
-                        {showForm ? "You finished every challenge" : `Congratulations, ${saved.name}`}
+                    <DialogTitle className="text-xl font-bold tracking-tight">
+                        {saved ? "Your certificate" : "Get your certificate"}
                     </DialogTitle>
                     <DialogDescription className="text-sm text-zinc-400 leading-relaxed">
-                        {showForm
-                            ? `Tell us who you are and your ${CERT.course} certificate is ready to download.`
-                            : `Your ${CERT.course} certificate is ready. Anyone who scans its QR code can check it online.`}
+                        {saved
+                            ? `${CERT.course}, issued to ${saved.name}.`
+                            : `You finished every challenge. Fill this in to get your ${CERT.course} certificate.`}
                     </DialogDescription>
                 </DialogHeader>
-                {showForm ? (
-                    <DetailsForm initialName={saved?.name} onDone={onDone} />
+                {saved ? (
+                    <CertificateView name={saved.name} dateKey={saved.dateKey || toDateKey(completedAt)} />
                 ) : (
-                    <CertificateView
-                        name={saved.name}
-                        dateKey={saved.dateKey || toDateKey(completedAt)}
-                        onEdit={() => setEditing(true)}
-                    />
+                    <DetailsForm onDone={onDone} />
                 )}
             </DialogContent>
         </Dialog>
