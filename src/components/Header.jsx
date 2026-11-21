@@ -427,7 +427,7 @@ export const Header = ({
                     onClick={onOpenChallenges}
                     className="text-zinc-300 hover:text-white hover:bg-surface-2 relative"
                     data-testid="header-challenges-btn"
-                    title="Guided Challenges"
+                    title="ctrl / ⌘ + c"
                 >
                     <Trophy className="w-4 h-4 mr-1.5 text-yellow" />
                     <span className="hidden sm:inline">Challenges</span>

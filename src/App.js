@@ -193,6 +193,22 @@ export default function App() {
         const onKey = (e) => {
             const meta = e.ctrlKey || e.metaKey;
             if (!meta) return;
+            if(e.key.toLowerCase() === "c"){
+                e.preventDefault()
+                setChallengesOpen((challengesOpen) => !challengesOpen)
+                if (challengesOpen) {
+                    setTerminalFocus((n) => n + 1)
+                }
+                setChallengeView(challenges.active ? "active" : "list")
+                sound.play("toggle")                
+            }
+            if(e.key.toLowerCase() === "j"){
+                e.preventDefault()
+                if (terminalFocus !== 0) {
+                    setTerminalFocus((n) => n + 1)
+                }
+            sound.play("toggle")                
+            }
             const tag = (e.target?.tagName || "").toLowerCase();
             // Don't hijack Cmd+Z while typing in textarea/input (let browser undo text)
             if (tag === "textarea" || tag === "input") return;
