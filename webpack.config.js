@@ -86,6 +86,7 @@ module.exports = (env, argv) => {
           "icon-192.png",
           "icon-512.png",
           "apple-touch-icon.png",
+          "privacy.html",
         ].map((f) => ({ from: `public/${f}`, to: f })),
       }),
       new SwPrecachePlugin(),

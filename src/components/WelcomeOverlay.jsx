@@ -2,7 +2,8 @@ import { useRef } from "react";
 import { motion } from "framer-motion";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "./ui/dialog";
 import { Button } from "./ui/button";
-import { ArrowRight, GitBranch, Terminal, Folder } from "lucide-react";
+import { ArrowRight, Award, GitBranch, Terminal, Folder } from "lucide-react";
+import { CHALLENGES } from "../lib/challenges";
 import coverImage from "../assets/cover.webp";
 
 const STORAGE_FLAG = "gitnaadu:welcome-seen";
@@ -112,6 +113,22 @@ export const WelcomeOverlay = ({ open, onOpenChange, onStart }) => {
                                     </div>
                                 </motion.div>
                             ))}
+                        </div>
+                        <div
+                            className="mt-2 sm:mt-3 rounded-md border border-yellow/40 bg-yellow/[0.07] p-3 sm:px-4 flex items-start gap-3"
+                            data-testid="welcome-certificate-note"
+                        >
+                            <div className="w-8 h-8 rounded-md bg-yellow text-black flex items-center justify-center flex-shrink-0">
+                                <Award className="w-4 h-4" />
+                            </div>
+                            <div className="min-w-0">
+                                <div className="font-bold text-sm text-white">Earn a certificate</div>
+                                <p className="text-xs text-zinc-300 leading-relaxed mt-1">
+                                    Complete all {CHALLENGES.length} guided challenges and get a free certificate of
+                                    completion from Engineering in Kannada, with a QR code anyone can scan to check
+                                    it.
+                                </p>
+                            </div>
                         </div>
                         <div className="mt-5 sm:mt-7 flex items-center justify-between gap-4">
                             <code className="font-mono text-xs text-zinc-500 hidden md:block">
