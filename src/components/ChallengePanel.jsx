@@ -55,9 +55,11 @@ export const ChallengePanel = ({
     const effectiveView = !active ? "list" : viewMode;
 
     return (
-        <Sheet open={open} onOpenChange={onOpenChange}>
+        <Sheet open={open} onOpenChange={onOpenChange} modal={false}>
             <SheetContent
                 side={side}
+                showOverlay={false}
+                onInteractOutside={(event) => event.preventDefault()}
                 className={
                     "bg-surface-1 border-surface-3 text-white p-0 overflow-hidden flex flex-col " +
                     (side === "bottom"
