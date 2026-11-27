@@ -116,17 +116,14 @@ export const CHALLENGES = [
         steps: [
             {
                 text: "Print your username.",
-                hint: "whoami",
                 check: cmdMatches(/^\s*whoami\s*$/),
             },
             {
                 text: "Print the current working directory path.",
-                hint: "pwd",
                 check: cmdMatches(/^\s*pwd\s*$/),
             },
             {
                 text: "List everything inside your home folder.",
-                hint: "ls",
                 check: cmdMatches(/^\s*ls(\s|$)/),
             },
         ],
@@ -143,18 +140,15 @@ export const CHALLENGES = [
         steps: [
             {
                 text: "Move into the portfolio-website folder.",
-                hint: "cd portfolio-website",
                 check: cwdIs(PROJECT),
             },
             {
                 text: "List the files inside it.",
-                hint: "ls",
                 check: ({ lastCommand, state }) =>
                     state.cwd === PROJECT && /^\s*ls(\s|$)/.test(lastCommand || ""),
             },
             {
                 text: "Walk back to your home folder.",
-                hint: "cd ..",
                 check: cwdIs("/home/student"),
             },
         ],
@@ -170,17 +164,14 @@ export const CHALLENGES = [
         steps: [
             {
                 text: "Create a folder called `scratch` in your home directory.",
-                hint: "cd ~ && mkdir scratch",
                 check: fileTypeIs("/home/student/scratch", "dir"),
             },
             {
                 text: "Move into it.",
-                hint: "cd scratch",
                 check: cwdIs("/home/student/scratch"),
             },
             {
                 text: "Create three empty files: notes.txt, todo.md, ideas.txt.",
-                hint: "touch notes.txt todo.md ideas.txt",
                 check: all(
                     pathExists("notes.txt"),
                     pathExists("todo.md"),
@@ -200,17 +191,14 @@ export const CHALLENGES = [
         steps: [
             {
                 text: "Move into the notes folder.",
-                hint: "cd ~/notes",
                 check: cwdIs("/home/student/notes"),
             },
             {
-                text: "Print the entire contents of git-basics.txt.",
-                hint: "cat git-basics.txt",
-                check: cmdMatches(/^\s*cat\s+git-basics\.txt\s*$/),
+            text: "Print the entire contents of git-basics.txt.",
+            check: cmdMatches(/^\s*cat\s+git-basics\.txt\s*$/),
             },
             {
                 text: "Print just the first lines using `head`.",
-                hint: "head git-basics.txt",
                 check: cmdMatches(/^\s*head\s+git-basics\.txt\s*$/),
             },
         ],
@@ -226,17 +214,14 @@ export const CHALLENGES = [
         steps: [
             {
                 text: "Be inside the scratch folder you made earlier (create it if needed).",
-                hint: "mkdir -p ~/scratch && cd ~/scratch",
                 check: cwdIs("/home/student/scratch"),
             },
             {
                 text: "Create a throwaway file called temp.log.",
-                hint: "touch temp.log",
                 check: pathExists("temp.log"),
             },
             {
                 text: "Delete it.",
-                hint: "rm temp.log",
                 check: pathMissing("temp.log"),
             },
         ],
@@ -253,17 +238,14 @@ export const CHALLENGES = [
         steps: [
             {
                 text: "From your home folder, create `app/src/components` in one command.",
-                hint: "cd ~ && mkdir -p app/src/components",
                 check: fileTypeIs("/home/student/app/src/components", "dir"),
             },
             {
                 text: "Add an empty index.js inside src.",
-                hint: "touch app/src/index.js",
                 check: pathExists("/home/student/app/src/index.js"),
             },
             {
                 text: "Visualise the tree.",
-                hint: "tree app",
                 check: cmdMatches(/^\s*tree(\s|$)/),
             },
         ],
@@ -280,22 +262,18 @@ export const CHALLENGES = [
         steps: [
             {
                 text: "Move into the portfolio-website folder.",
-                hint: "cd ~/portfolio-website",
                 check: cwdIs(PROJECT),
             },
             {
                 text: "Initialize a new git repository here.",
-                hint: "git init",
                 check: all(cwdIs(PROJECT), repoAt(PROJECT)),
             },
             {
                 text: "Stage every file in the directory.",
-                hint: "git add .",
                 check: lastKindIn("git-add", "git-commit"),
             },
             {
                 text: "Commit the staged files with a message.",
-                hint: 'git commit -m "first commit"',
                 check: all(lastKindIs("git-commit"), minCommits(1)),
             },
         ],
@@ -312,22 +290,18 @@ export const CHALLENGES = [
         steps: [
             {
                 text: "Be inside a git repository.",
-                hint: "cd ~/portfolio-website && git init",
                 check: ({ state }) => Boolean(findRepo(state.repos || {}, state.cwd)),
             },
             {
                 text: "Run `git status` to see untracked files.",
-                hint: "git status",
                 check: cmdMatches(/^\s*git\s+status\s*$/),
             },
             {
                 text: "Stage just `index.html` (not everything).",
-                hint: "git add index.html",
                 check: lastKindIs("git-add"),
             },
             {
                 text: "Run `git status` again — the file should now be 'to be committed'.",
-                hint: "git status",
                 check: cmdMatches(/^\s*git\s+status\s*$/),
             },
         ],
@@ -343,22 +317,18 @@ export const CHALLENGES = [
         steps: [
             {
                 text: "Have a repo with at least one commit.",
-                hint: "git init && git add . && git commit -m 'init'",
                 check: minCommits(1),
             },
             {
                 text: "Create a new file called README.md.",
-                hint: "touch README.md",
                 check: pathExists("README.md"),
             },
             {
                 text: "Stage and commit it with a meaningful message.",
-                hint: 'git add . && git commit -m "add readme"',
                 check: all(lastKindIs("git-commit"), minCommits(2)),
             },
             {
                 text: "View the commit history.",
-                hint: "git log",
                 check: cmdMatches(/^\s*git\s+log\s*$/),
             },
         ],
@@ -375,27 +345,22 @@ export const CHALLENGES = [
         steps: [
             {
                 text: "Be inside a git repository.",
-                hint: "cd ~/portfolio-website && git init",
                 check: ({ state }) => Boolean(findRepo(state.repos || {}, state.cwd)),
             },
             {
                 text: "Make sure there is at least one commit.",
-                hint: 'git add . && git commit -m "init"',
                 check: minCommits(1),
             },
             {
                 text: "Create a new branch called 'feature/login'.",
-                hint: "git checkout -b feature/login",
                 check: branchExists("feature/login"),
             },
             {
                 text: "Confirm you're on 'feature/login'.",
-                hint: "git status",
                 check: onBranch("feature/login"),
             },
             {
                 text: "Make a change and create a new commit on this branch.",
-                hint: 'touch login.html && git add . && git commit -m "login page"',
                 check: all(onBranch("feature/login"), minCommits(2)),
             },
         ],
@@ -412,17 +377,14 @@ export const CHALLENGES = [
         steps: [
             {
                 text: "Have a repo with at least one commit.",
-                hint: "git init && git commit -m 'init' (after staging)",
                 check: minCommits(1),
             },
             {
                 text: "Create two branches: `develop` and `staging`.",
-                hint: "git branch develop && git branch staging",
                 check: all(branchExists("develop"), branchExists("staging")),
             },
             {
                 text: "List all branches.",
-                hint: "git branch",
                 check: cmdMatches(/^\s*git\s+branch\s*$/),
             },
         ],
@@ -439,12 +401,10 @@ export const CHALLENGES = [
         steps: [
             {
                 text: "Create a branch with a deliberately bad name.",
-                hint: "git checkout -b wip-stuff",
                 check: branchExists("wip-stuff"),
             },
             {
                 text: "Rename it to `feature/dashboard`.",
-                hint: "git branch -m feature/dashboard",
                 check: all(
                     branchExists("feature/dashboard"),
                     ({ state }) => {
@@ -466,17 +426,14 @@ export const CHALLENGES = [
         steps: [
             {
                 text: "Be on the `main` branch.",
-                hint: "git checkout main",
                 check: onBranch("main"),
             },
             {
                 text: "Create a throwaway branch `tmp`.",
-                hint: "git branch tmp",
                 check: branchExists("tmp"),
             },
             {
                 text: "Delete it.",
-                hint: "git branch -d tmp",
                 check: ({ state }) => {
                     const repo = findRepo(state.repos || {}, state.cwd);
                     return !repo?.branches?.tmp;
@@ -494,23 +451,19 @@ export const CHALLENGES = [
         steps: [
             {
                 text: "Create a 'feature/profile' branch.",
-                hint: "git checkout -b feature/profile",
                 check: branchExists("feature/profile"),
             },
             {
                 text: "Make at least one commit on feature/profile.",
-                hint: 'touch profile.html && git add . && git commit -m "profile"',
                 check: ({ state }) =>
                     onBranch("feature/profile")({ state }) && minCommits(2)({ state }),
             },
             {
                 text: "Switch back to main.",
-                hint: "git checkout main",
                 check: onBranch("main"),
             },
             {
                 text: "Merge feature/profile into main.",
-                hint: "git merge feature/profile",
                 check: lastKindIs("git-merge"),
             },
         ],
@@ -526,17 +479,14 @@ export const CHALLENGES = [
         steps: [
             {
                 text: "Have at least one commit in your repo.",
-                hint: 'git commit -m "..."',
                 check: minCommits(1),
             },
             {
                 text: "Create a tag named v1.0.",
-                hint: "git tag v1.0",
                 check: tagExists("v1.0"),
             },
             {
                 text: "Make a new commit so v1.0 stays behind.",
-                hint: 'touch CHANGELOG.md && git add . && git commit -m "changelog"',
                 check: ({ state, ...rest }) =>
                     tagExists("v1.0")({ state, ...rest }) && minCommits(2)({ state, ...rest }),
             },
@@ -553,17 +503,14 @@ export const CHALLENGES = [
         steps: [
             {
                 text: "Move into the python-project folder.",
-                hint: "cd ~/python-project",
                 check: cwdIs(PYPROJECT),
             },
             {
                 text: "Initialize git here.",
-                hint: "git init",
                 check: repoAt(PYPROJECT),
             },
             {
                 text: "Stage everything and commit.",
-                hint: 'git add . && git commit -m "initial python project"',
                 check: all(lastKindIs("git-commit"), ({ state }) => {
                     const repo = state.repos?.[PYPROJECT];
                     return repo && Object.keys(repo.commits || {}).length >= 1;
@@ -584,17 +531,14 @@ export const CHALLENGES = [
         steps: [
             {
                 text: "Be in a repo with at least one commit.",
-                hint: "git init && git add . && git commit -m 'init'",
                 check: minCommits(1),
             },
             {
                 text: "Create and stage a new file.",
-                hint: "touch secret.txt && git add secret.txt",
                 check: all(pathExists("secret.txt"), lastKindIs("git-add")),
             },
             {
                 text: "Unstage it without deleting the file.",
-                hint: "git restore --staged secret.txt",
                 check: lastKindIs("git-restore"),
             },
         ],
@@ -610,22 +554,18 @@ export const CHALLENGES = [
         steps: [
             {
                 text: "Have a repo with at least one commit.",
-                hint: "git init && commit something",
                 check: minCommits(1),
             },
             {
                 text: "Create a new untracked file so there's something to diff.",
-                hint: "touch draft.txt",
                 check: pathExists("draft.txt"),
             },
             {
                 text: "Stage it so it shows up in the staged diff.",
-                hint: "git add draft.txt",
                 check: lastKindIs("git-add"),
             },
             {
                 text: "Show the staged diff.",
-                hint: "git diff --staged",
                 check: ({ lastHighlight }) =>
                     lastHighlight?.kind === "git-diff" && (lastHighlight.count || 0) > 0,
             },
@@ -641,13 +581,11 @@ export const CHALLENGES = [
         intro: "Made a typo in your commit message? `git commit --amend` replaces the last commit with a fixed-up copy (new hash, same parent).",
         steps: [
             {
-                text: "Make a commit with a deliberately bad message.",
-                hint: 'touch bug.txt && git add . && git commit -m "intial commit"',
+                text: "Make a commit with a deliberately bad message.",  
                 check: lastKindIs("git-commit"),
             },
             {
                 text: "Amend that last commit with a corrected message.",
-                hint: 'git commit --amend -m "initial commit"',
                 check: lastKindIs("git-amend"),
             },
         ],
@@ -662,12 +600,10 @@ export const CHALLENGES = [
         steps: [
             {
                 text: "Create two commits.",
-                hint: 'touch a.txt && git add . && git commit -m "add a" && touch b.txt && git add . && git commit -m "add b"',
                 check: minCommits(3),
             },
             {
                 text: "Revert the most recent commit (HEAD).",
-                hint: "git revert HEAD",
                 check: lastKindIs("git-revert"),
             },
         ],
@@ -684,12 +620,10 @@ export const CHALLENGES = [
         steps: [
             {
                 text: "Have at least 2 commits.",
-                hint: 'commit twice',
                 check: minCommits(2),
             },
             {
                 text: "Soft-reset one commit back.",
-                hint: "git reset --soft HEAD~1",
                 check: lastKindIs("git-reset"),
             },
         ],
@@ -706,22 +640,18 @@ export const CHALLENGES = [
         steps: [
             {
                 text: "Have a repo with at least one commit.",
-                hint: "init + commit",
                 check: minCommits(1),
             },
             {
                 text: "Make a change you're not ready to commit (touch a new file).",
-                hint: "touch wip.txt",
                 check: pathExists("wip.txt"),
             },
             {
                 text: "Stash it.",
-                hint: "git stash",
                 check: all(lastKindIs("git-stash"), stashCountAtLeast(1)),
             },
             {
                 text: "Pop the stash back.",
-                hint: "git stash pop",
                 check: lastKindIs("git-stash-pop"),
             },
         ],
@@ -737,7 +667,6 @@ export const CHALLENGES = [
         steps: [
             {
                 text: "Be on a feature branch with commits not on main.",
-                hint: 'git checkout -b feature/clean && touch x.txt && git add . && git commit -m "x"',
                 check: ({ state }) => {
                     const repo = findRepo(state.repos || {}, state.cwd);
                     const cur = currentBranch(repo);
@@ -746,12 +675,10 @@ export const CHALLENGES = [
             },
             {
                 text: "Switch back to main and make a separate commit (to diverge).",
-                hint: 'git checkout main && touch m.txt && git add . && git commit -m "main update"',
                 check: ({ state }) => onBranch("main")({ state }) && minCommits(3)({ state }),
             },
             {
                 text: "Switch to your feature branch.",
-                hint: "git checkout feature/clean",
                 check: ({ state }) => {
                     const repo = findRepo(state.repos || {}, state.cwd);
                     return repo && currentBranch(repo) !== "main";
@@ -759,7 +686,6 @@ export const CHALLENGES = [
             },
             {
                 text: "Rebase your feature branch onto main.",
-                hint: "git rebase main",
                 check: lastKindIs("git-rebase"),
             },
         ],
@@ -773,28 +699,23 @@ export const CHALLENGES = [
         intro: "Time to talk to a remote. Push your work, simulate another developer making a commit on origin, then pull it back.",
         steps: [
             {
-                text: "Have at least one commit.",
-                hint: 'git add . && git commit -m "..."',
+                text: "Have at least one commit.",   
                 check: minCommits(1),
             },
             {
                 text: "Push your current branch to origin.",
-                hint: "git push",
                 check: hasRemoteRef("origin/main"),
             },
             {
                 text: "Open the Remote tab and commit a change there (simulating another developer).",
-                hint: "Tab → Remote → edit a file → commit message → 'Commit to remote'",
                 check: hasRemoteCommits(2),
             },
             {
                 text: "Fetch updates from origin.",
-                hint: "git fetch",
                 check: lastKindIs("git-fetch"),
             },
             {
                 text: "Pull origin/main into your branch.",
-                hint: "git pull",
                 check: lastKindIs("git-pull"),
             },
         ],
@@ -810,22 +731,18 @@ export const CHALLENGES = [
         steps: [
             {
                 text: "Create a 'hotfix' branch off main.",
-                hint: "git checkout -b hotfix",
                 check: branchExists("hotfix"),
             },
             {
                 text: "Make a commit on hotfix.",
-                hint: 'touch FIX.txt && git add . && git commit -m "important fix"',
                 check: ({ state }) => onBranch("hotfix")({ state }) && minCommits(2)({ state }),
             },
             {
                 text: "Switch back to main.",
-                hint: "git checkout main",
                 check: onBranch("main"),
             },
             {
                 text: "Cherry-pick the hotfix commit onto main.",
-                hint: "git log (copy the hotfix hash) then `git cherry-pick <hash>`",
                 check: lastKindIs("git-cherry-pick"),
             },
         ],
@@ -840,17 +757,14 @@ export const CHALLENGES = [
         steps: [
             {
                 text: "Have at least 2 commits.",
-                hint: 'touch a.txt && git add . && git commit -m "a" && touch b.txt && git add . && git commit -m "b"',
                 check: minCommits(2),
             },
             {
                 text: "Check out a previous commit by its hash (use `git log` to find one).",
-                hint: "git checkout <older-hash>",
                 check: detached(),
             },
             {
                 text: "Rescue yourself by creating a new branch from this state.",
-                hint: "git checkout -b rescue-branch",
                 check: ({ state, ...rest }) =>
                     branchExists("rescue-branch")({ state, ...rest }) && !detached()({ state, ...rest }),
             },
@@ -869,32 +783,26 @@ export const CHALLENGES = [
         steps: [
             {
                 text: "Be in the main folder of a repo with at least one commit.",
-                hint: "cd ~/portfolio-website (git init + a first commit if needed)",
                 check: all(inMainWorktree, minCommits(1)),
             },
             {
                 text: "Add a worktree next to the repo, on a new branch called urgent-fix.",
-                hint: "git worktree add -b urgent-fix ../urgent-fix",
                 check: lastKindIs("git-worktree-add"),
             },
             {
                 text: "Step into the new worktree folder.",
-                hint: "cd ../urgent-fix",
                 check: inWorktree,
             },
             {
                 text: "Commit a fix there — your main folder is untouched.",
-                hint: 'echo "fixed" > FIX.txt && git add . && git commit -m "urgent fix"',
                 check: all(inWorktree, lastKindIs("git-commit")),
             },
             {
                 text: "Go back to the main folder.",
-                hint: "cd ../portfolio-website",
                 check: inMainWorktree,
             },
             {
                 text: "Merge the fix — the commit is already here, no push or pull needed.",
-                hint: "git merge urgent-fix",
                 check: all(inMainWorktree, lastKindIs("git-merge")),
             },
         ],
@@ -911,27 +819,22 @@ export const CHALLENGES = [
         steps: [
             {
                 text: "From the main folder, add a worktree without naming a branch — git creates one named after the folder.",
-                hint: "git worktree add ../experiment",
                 check: all(inMainWorktree, lastKindIs("git-worktree-add")),
             },
             {
                 text: "Try to switch to that branch here. Git refuses, because the worktree has it.",
-                hint: "git switch experiment",
                 check: all(cmdMatches(/git\s+(switch|checkout)\s+experiment\b/), ({ state }) => !onBranch("experiment")({ state })),
             },
             {
                 text: "List the worktrees to see which folder has which branch.",
-                hint: "git worktree list",
                 check: lastKindIs("git-worktree-list"),
             },
             {
                 text: "Remove the experiment worktree (its branch and commits are kept).",
-                hint: "git worktree remove ../experiment",
                 check: lastKindIs("git-worktree-remove"),
             },
             {
                 text: "Now the branch is free — switch to it in the main folder.",
-                hint: "git switch experiment",
                 check: all(inMainWorktree, onBranch("experiment")),
             },
         ],
@@ -948,22 +851,18 @@ export const CHALLENGES = [
         steps: [
             {
                 text: "Add a scratch worktree.",
-                hint: "git worktree add ../scratch",
                 check: lastKindIs("git-worktree-add"),
             },
             {
                 text: "Delete its folder by hand, the wrong way.",
-                hint: "rm -rf ../scratch",
                 check: hasMissingWorktree,
             },
             {
                 text: "List the worktrees — git still remembers it and marks it prunable.",
-                hint: "git worktree list",
                 check: all(lastKindIs("git-worktree-list"), hasMissingWorktree),
             },
             {
                 text: "Prune the stale entry.",
-                hint: "git worktree prune",
                 check: lastKindIs("git-worktree-prune"),
             },
         ],
