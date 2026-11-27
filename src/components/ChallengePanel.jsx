@@ -384,13 +384,19 @@ const ActiveChallenge = ({ challenge, stepIndex, onStop, onViewList, allDone, on
                                         {s.text}
                                     </p>
                                     {isCurrent && s.hint && (
-                                        <div className="mt-2 flex items-start gap-1.5 px-2 py-1.5 rounded bg-surface-1/80 border border-surface-3">
-                                            <Lightbulb className="w-3 h-3 text-yellow flex-shrink-0 mt-0.5" />
-                                            <code className="font-mono text-[11px] text-yellow break-all">
-                                                {s.hint}
-                                            </code>
-                                        </div>
-                                    )}
+    <div
+        className="mt-2 flex items-start gap-1.5 px-2 py-1.5 rounded bg-surface-1/80 border border-surface-3 select-none"
+        onCopy={(e) => e.preventDefault()}
+        onCut={(e) => e.preventDefault()}
+        onContextMenu={(e) => e.preventDefault()}
+        onDragStart={(e) => e.preventDefault()}
+    >
+        <Lightbulb className="w-3 h-3 text-yellow flex-shrink-0 mt-0.5" />
+        <code className="font-mono text-[11px] text-yellow break-all select-none">
+            {s.hint}
+        </code>
+    </div>
+)}
                                 </div>
                             </div>
                         </motion.div>
