@@ -337,7 +337,7 @@ const ActiveChallenge = ({ challenge, stepIndex, onStop, onViewList, allDone, on
                 </div>
             </div>
 
-            <div className="flex-1 overflow-auto px-3 py-3 space-y-2">
+            <div className="flex-1 overflow-auto px-3 py-3 space-y-2 select-text">
                 {challenge.steps.map((s, i) => {
                     const isDone = i < stepIndex;
                     const isCurrent = i === stepIndex;
@@ -383,20 +383,30 @@ const ActiveChallenge = ({ challenge, stepIndex, onStop, onViewList, allDone, on
                                     >
                                         {s.text}
                                     </p>
-                                    {isCurrent && s.hint && (
+                                   {s.hint && isCurrent && (
     <div
-        className="mt-2 flex items-start gap-1.5 px-2 py-1.5 rounded bg-surface-1/80 border border-surface-3 select-none"
-        onCopy={(e) => e.preventDefault()}
+        className="mt-2 px-2 py-2 rounded bg-surface-1/80 border border-surface-3 select-none"
+        onCopy={(e) => {
+            e.preventDefault();
+            alert("Please don't copy the hint! Try typing it yourself for better learning.");
+        }}
         onCut={(e) => e.preventDefault()}
         onContextMenu={(e) => e.preventDefault()}
         onDragStart={(e) => e.preventDefault()}
     >
-        <Lightbulb className="w-3 h-3 text-yellow flex-shrink-0 mt-0.5" />
-        <code className="font-mono text-[11px] text-yellow break-all select-none">
-            {s.hint}
-        </code>
+        <div className="flex items-start gap-1.5">
+            <Lightbulb className="w-3 h-3 text-yellow flex-shrink-0 mt-0.5" />
+            <code className="font-mono text-[11px] text-yellow break-all select-none">
+                {s.hint}
+            </code>
+        </div>
+
+        <p className="text-[10px] text-zinc-500 mt-2">
+            Learning tip: Type the command yourself instead of copying and pasting!
+        </p>
     </div>
 )}
+
                                 </div>
                             </div>
                         </motion.div>
