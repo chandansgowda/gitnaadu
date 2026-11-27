@@ -363,6 +363,10 @@ export default function App() {
             onSound={playForHighlight}
             isMobile={isMobile}
             focusSignal={terminalFocus}
+            isChallengeActive={Boolean(challenges.active)}
+            onPasteBlocked={() =>
+                toast("Please type the command instead of pasting.")
+            }
         />
     );
 

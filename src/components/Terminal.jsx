@@ -98,6 +98,8 @@ export const Terminal = ({
     onSound,
     isMobile = false,
     focusSignal = 0,
+    isChallengeActive = false,
+    onPasteBlocked,
 }) => {
     const [input, setInput] = useState("");
     const [historyIdx, setHistoryIdx] = useState(-1);
@@ -267,6 +269,11 @@ export const Terminal = ({
             ref={inputRef}
             value={input}
             onChange={(e) => setInput(e.target.value)}
+            onPaste={(e) => {
+                if (!isChallengeActive) return;
+                e.preventDefault();
+                onPasteBlocked?.();
+            }}
             onKeyDown={onKeyDown}
             spellCheck={false}
             autoCorrect="off"

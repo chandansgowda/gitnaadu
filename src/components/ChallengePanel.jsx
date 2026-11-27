@@ -58,6 +58,9 @@ export const ChallengePanel = ({
         <Sheet open={open} onOpenChange={onOpenChange}>
             <SheetContent
                 side={side}
+                onCopy={(e) => e.preventDefault()}
+                onCut={(e) => e.preventDefault()}
+                onContextMenu={(e) => e.preventDefault()}
                 className={
                     "bg-surface-1 border-surface-3 text-white p-0 overflow-hidden flex flex-col " +
                     (side === "bottom"
@@ -386,7 +389,7 @@ const ActiveChallenge = ({ challenge, stepIndex, onStop, onViewList, allDone, on
                                     {isCurrent && s.hint && (
                                         <div className="mt-2 flex items-start gap-1.5 px-2 py-1.5 rounded bg-surface-1/80 border border-surface-3">
                                             <Lightbulb className="w-3 h-3 text-yellow flex-shrink-0 mt-0.5" />
-                                            <code className="font-mono text-[11px] text-yellow break-all">
+                                            <code className="font-mono text-[11px] text-yellow break-all select-none">
                                                 {s.hint}
                                             </code>
                                         </div>
